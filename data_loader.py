@@ -25,6 +25,11 @@ def stationarity_audit(df, columns, title):
             print(f"{col:<15} | INSUFFICIENT DATA")
 
 def fetch_cpu_index(cache_file="cpu_cache.csv"):
+    # NEW: Check if cache exists FIRST to avoid network hang
+    if os.path.exists(cache_file):
+        print(f"[DATA] Using local cache: {cache_file}")
+        cpu_df = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+        return cpu_df
     print("[DATA] Attempting to fetch Global CPU Index from policyuncertainty.com...")
     url = "https://policyuncertainty.com/media/CPU%20index.csv"
     headers = {"User-Agent": "Mozilla/5.0"}
