@@ -93,7 +93,7 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         gradient_clip_val=0.1,
         callbacks=callbacks_list,
-        deterministic=True,
+        deterministic=False,  #used to be true
         enable_progress_bar=enable_progress_bar,
         logger=False
     )
