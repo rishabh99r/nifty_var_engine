@@ -62,8 +62,8 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
 
     # 6. DataLoaders
     # num_workers=0 is safer for avoiding multi-processing deadlocks in Colab during HPO
-    train_dataloader = training_dataset.to_dataloader(train=True, batch_size=64, num_workers=0)
-    val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=64, num_workers=0)
+    train_dataloader = training_dataset.to_dataloader(train=True, batch_size=32, num_workers=0)
+    val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=32, num_workers=0)
 
     # 7. Model Architecture Compilation
     print(f"[TFT] Compiling Temporal Fusion Transformer (Hidden: {hidden_size}, Dropout: {dropout})...")
