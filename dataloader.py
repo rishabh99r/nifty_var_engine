@@ -19,7 +19,7 @@ def stationarity_audit(df, columns, title):
         series = df[col].dropna()
         if len(series) > 100:
             result = adfuller(series)
-            status = " Stationary" if result[1] < 0.05 else "❌ NON-Stationary"
+            status = " Stationary" if result[1] < 0.05 else " NON-Stationary"
             print(f"{col:<15} | {result[0]:<15.4f} | {result[1]:<10.4f} | {status}")
         else:
             print(f"{col:<15} | INSUFFICIENT DATA")
@@ -34,14 +34,21 @@ def fetch_cpu_index(cache_file="cpu_cache.csv"):
         cpu_df = pd.read_csv(io.StringIO(s.decode('utf-8')))
         cpu_df = cpu_df.iloc[:, :2]
         cpu_df.columns = ['Date', 'Global_CPU']
+
+        # --- CRITICAL FIX START ---
+        # Force column to numeric. If there's a string, it becomes NaN.
+        cpu_df['Global_CPU'] = pd.to_numeric(cpu_df['Global_CPU'], errors='coerce')
+        # --- CRITICAL FIX END ---
+
         cpu_df['Date'] = pd.to_datetime(cpu_df['Date'], format='%b-%y', errors='coerce')
         cpu_df.dropna(inplace=True)
         cpu_df.set_index('Date', inplace=True)
 
         cpu_daily = cpu_df.resample('D').ffill()
         cpu_daily.to_csv(cache_file)
-        print(f"[DATA]  Live CPU fetched successfully. Cached to {cache_file}.")
+        print(f"[DATA] Live CPU fetched successfully. Cached to {cache_file}.")
         return cpu_daily
+
 
     except Exception as e:
         print(f"[ERROR] Live CPU Fetch Failed: {e}")
