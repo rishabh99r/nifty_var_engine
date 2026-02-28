@@ -15,46 +15,46 @@ def stationarity_audit(df, columns, title):
     print(f"\n[AUDIT] --- {title} ---")
     print(f"{'Variable':<15} | {'ADF Stat':<15} | {'p-value':<10} | {'Status'}")
     print("-" * 65)
+
+    # List of variables we treat as absolute/non-time-series proxies
+    skip_vars = ['Global_CPU']
+
     for col in columns:
+        if col in skip_vars:
+            print(f"{col:<15} | {'N/A':<15} | {'N/A':<10} | ABSOLUTE PROXY (SKIP)")
+            continue
+
         series = df[col].dropna()
-        if len(series) > 100:
-            result = adfuller(series)
-            status = " Stationary" if result[1] < 0.05 else " NON-Stationary"
-            print(f"{col:<15} | {result[0]:<15.4f} | {result[1]:<10.4f} | {status}")
-        else:
-            print(f"{col:<15} | INSUFFICIENT DATA")
+        if series.std() == 0:
+            print(f"{col:<15} | {'N/A':<15} | {'N/A':<10} | CONSTANT (SKIP)")
+            continue
 
-def fetch_cpu_index(cache_file="cpu_cache.csv"):
-    # 1. Check if we already have a clean cache
+        result = adfuller(series)
+        status = "STATIONARY" if result[1] < 0.05 else "NON-STATIONARY"
+        print(f"{col:<15} | {result[0]:<15.4f} | {result[1]:<10.4f} | {status}")
+
+def fetch_cpu_index(cache_file="cpu_index_static.csv"):
+    # Hard-coded local path for research integrity
     if os.path.exists(cache_file):
-        print(f"[DATA] Loading Global CPU from local cache...")
-        return pd.read_csv(cache_file, index_col=0, parse_dates=True)
+        print(f"[DATA] Loading static Global CPU Index from {cache_file}...")
+        cpu_df = pd.read_csv(cache_file)
 
-    # 2. Try the live fetch with a very short timeout
-    print("[DATA] Attempting live fetch (5s timeout)...")
-    url = "https://policyuncertainty.com/media/CPU%20index.csv"
-    try:
-        r = requests.get(url, timeout=5, verify=False)
-        if r.status_code == 200:
-            cpu_df = pd.read_csv(io.StringIO(r.text))
-            cpu_df = cpu_df.iloc[:, :2]
-            cpu_df.columns = ['Date', 'Global_CPU']
-            cpu_df['Global_CPU'] = pd.to_numeric(cpu_df['Global_CPU'], errors='coerce')
-            cpu_df['Date'] = pd.to_datetime(cpu_df['Date'], format='%b-%y', errors='coerce')
-            cpu_df.dropna(inplace=True).set_index('Date', inplace=True)
-            cpu_daily = cpu_df.resample('D').ffill()
-            cpu_daily.to_csv(cache_file)
-            return cpu_daily
-    except Exception as e:
-        print(f"[WARNING] Connection failed: {e}")
+        # Standardize columns
+        cpu_df.columns = ['Date', 'Global_CPU']
+        cpu_df['Global_CPU'] = pd.to_numeric(cpu_df['Global_CPU'], errors='coerce')
+        cpu_df['Date'] = pd.to_datetime(cpu_df['Date'], errors='coerce')
 
-    # 3. THE FAILSAFE: Generate a dummy series if all else fails
-    print("[DATA] CRITICAL: Using neutral dummy data for Global_CPU to prevent hang.")
-    dates = pd.date_range(start=START_DATE, end=pd.Timestamp.now())
-    dummy_cpu = pd.DataFrame({'Global_CPU': 100.0}, index=dates)
-    dummy_cpu.to_csv(cache_file)
-    return dummy_cpu
+        cpu_df.dropna(inplace=True)
+        cpu_df.set_index('Date', inplace=True)
 
+        # Resample and forward-fill to 2026
+        cpu_daily = cpu_df.resample('D').ffill()
+        return cpu_daily
+    else:
+        # Emergency fallback if you forget to upload the CSV
+        print("[WARNING] Static CPU file not found. Generating neutral 100.0 placeholder.")
+        dates = pd.date_range(start=START_DATE, end=pd.Timestamp.now())
+        return pd.DataFrame({'Global_CPU': 100.0}, index=dates)
 
 def fetch_and_clean_data():
     print(f"\n[PIPELINE] Initializing Data Ingestion from {START_DATE}...")
