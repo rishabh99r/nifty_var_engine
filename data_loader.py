@@ -33,7 +33,7 @@ def stationarity_audit(df, columns, title):
         status = "STATIONARY" if result[1] < 0.05 else "NON-STATIONARY"
         print(f"{col:<15} | {result[0]:<15.4f} | {result[1]:<10.4f} | {status}")
 
-def fetch_cpu_index(cache_file="cpu_index_static.csv"):
+def fetch_cpu_index(cache_file="CPU_index.csv"):
     # Hard-coded local path for research integrity
     if os.path.exists(cache_file):
         print(f"[DATA] Loading static Global CPU Index from {cache_file}...")
