@@ -88,6 +88,7 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
         callbacks=callbacks_list,
         deterministic=False,
         enable_progress_bar=enable_progress_bar,
+        num_sanity_val_steps=0,
         logger=False
     )
 

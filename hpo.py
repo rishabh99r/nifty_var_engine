@@ -33,7 +33,7 @@ def optimize_hyperparameters(df, n_trials=30):
                 learning_rate=learning_rate,
                 seed=42,
                 max_epochs=50,
-                enable_progress_bar=False,
+                enable_progress_bar=True,
                 pruning_callback=pruning_callback
             )
             elapsed = time.time() - t0
