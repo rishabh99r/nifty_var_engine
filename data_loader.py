@@ -49,7 +49,7 @@ def fetch_cpu_index(cache_file="CPU_index.csv"):
 def fetch_and_clean_data():
     print(f"\n[PIPELINE] Initializing Data Ingestion from {START_DATE}...")
 
-    assets = {'^NSEI': 'Nifty50', '^VIX': 'VIX', 'CL=F': 'Crude_Oil', '^TNX': 'US_10Y', 'DX-Y.NYB': 'DXY'}
+    assets = {'^NSEI': 'Nifty50', '^VIX': 'VIX', 'CL=F': 'Crude_Oil', '^TNX': 'US_10Y', 'DX=F': 'DXY'}
     print(f"[DATA] Downloading Yahoo Finance tickers: {list(assets.values())}...")
     raw_data = yf.download(list(assets.keys()), start=START_DATE, progress=False)['Close']
 
