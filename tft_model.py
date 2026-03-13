@@ -1,7 +1,7 @@
 # tft_model.py
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping
-from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer, QuantileLoss
+from pytorch-forecasting import TimeSeriesDataSet, TemporalFusionTransformer, QuantileLoss
 import torch
 import warnings
 
