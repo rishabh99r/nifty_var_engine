@@ -1,7 +1,7 @@
+# main.py
 import pandas as pd
 import numpy as np
-from data_loader import fetch_and_clean_data
-from garch_engine import run_rolling_garch
+import os
 from hpo import optimize_hyperparameters
 from tft_model import train_tft
 from metrics import calculate_metrics
@@ -9,8 +9,6 @@ from config import VALIDATION_SEEDS, set_seed
 
 def generate_predictions(tft, test_dataloader, df):
     print("[INFERENCE] Extracting out-of-sample predictions on TEST set...")
-
-    # Predict exclusively using test_dataloader (last 250 days)
     raw_predictions, index = tft.predict(test_dataloader, mode="quantiles", return_index=True)
 
     tft_var_99 = raw_predictions[:, 0, 0].numpy()
@@ -27,10 +25,15 @@ def generate_predictions(tft, test_dataloader, df):
     return merged_df
 
 def main():
-    print("===== INITIALIZING NIFTY 50 RISK ENGINE =====")
+    print("===== INITIALIZING NIFTY 50 RISK ENGINE (FAST TRAINING PIPELINE) =====")
 
-    raw_df = fetch_and_clean_data()
-    master_df = run_rolling_garch(raw_df, csv_path="master_df.csv")
+    csv_path = "master_df.csv"
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"[ERROR] {csv_path} not found! Run 'python build_data.py' first to generate data.")
+
+    print(f"[LOAD] Loading pre-computed dataset from {csv_path}...")
+    master_df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+    print(f"[LOAD] Dataset successfully loaded ({len(master_df)} trading days).")
 
     print("\n=== PHASE 1: HYPERPARAMETER OPTIMIZATION (VALIDATION SET) ===")
     best_params = optimize_hyperparameters(master_df, n_trials=30)
@@ -49,14 +52,14 @@ def main():
             learning_rate=best_params['learning_rate'],
             seed=seed,
             max_epochs=100,
-            enable_progress_bar=False,
+            enable_progress_bar=True,
             pruning_callback=None
         )
 
         results_df = generate_predictions(tft, test_dataloader, master_df)
         seed_metrics = calculate_metrics(results_df)
 
-        print(f"[AUDIT] Seed {seed} Results:")
+        print(f"\n[AUDIT] Seed {seed} Results:")
         print(f"  -> Test Days:     {len(results_df)}")
         print(f"  -> TFT Failures:  {seed_metrics['tft_failures']} (Limit: {seed_metrics['basel_limit']})")
         print(f"  -> Kupiec p-val:  {seed_metrics['kupiec_p_value']:.4f}")

@@ -20,7 +20,7 @@ def optimize_hyperparameters(df, n_trials=30):
         t0 = time.time()
 
         try:
-            # Set max_epochs to 30 for faster HPO sweeps
+            # enable_progress_bar=True forces Colab to show live epoch ticking
             _, _, val_loss, _ = train_tft(
                 df=df,
                 hidden_size=hidden_size,
@@ -28,15 +28,15 @@ def optimize_hyperparameters(df, n_trials=30):
                 learning_rate=learning_rate,
                 seed=42,
                 max_epochs=30,
-                enable_progress_bar=False,
+                enable_progress_bar=True,
                 pruning_callback=None
             )
             elapsed = time.time() - t0
-            print(f"[HPO] Trial {trial.number+1:02d}/{n_trials} | hidden={hidden_size:<3d} | dropout={dropout:.1f} | lr={learning_rate:.5f} | Val Loss: {val_loss:.4f} | Time: {elapsed:.0f}s")
+            print(f"\n[HPO] Trial {trial.number+1:02d}/{n_trials} Complete | hidden={hidden_size:<3d} | dropout={dropout:.1f} | lr={learning_rate:.5f} | Val Loss: {val_loss:.4f} | Time: {elapsed:.0f}s\n")
             return val_loss
 
         except Exception as e:
-            print(f"[HPO] Trial {trial.number+1:02d}/{n_trials} FAILED | Error: {e}")
+            print(f"\n[HPO] Trial {trial.number+1:02d}/{n_trials} FAILED | Error: {e}\n")
             return float("inf")
 
         finally:

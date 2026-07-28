@@ -10,7 +10,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 def build_datasets(df, encoder_length=60):
     max_idx = df["time_idx"].max()
 
-    # 250 days for Test, 250 days for Validation
     test_cutoff = max_idx - 250
     val_cutoff = test_cutoff - 250
 
@@ -25,7 +24,6 @@ def build_datasets(df, encoder_length=60):
         "Global_CPU_Ret"
     ]
 
-    # 1. Train Dataset
     train_df = df[df["time_idx"] <= val_cutoff]
     training_dataset = TimeSeriesDataSet(
         train_df,
@@ -45,13 +43,11 @@ def build_datasets(df, encoder_length=60):
         allow_missing_timesteps=True
     )
 
-    # 2. Validation Dataset
     val_df = df[(df["time_idx"] > val_cutoff - encoder_length) & (df["time_idx"] <= test_cutoff)]
     validation_dataset = TimeSeriesDataSet.from_dataset(
         training_dataset, val_df, predict=False, stop_randomization=True
     )
 
-    # 3. Test Dataset
     test_df = df[df["time_idx"] > test_cutoff - encoder_length]
     test_dataset = TimeSeriesDataSet.from_dataset(
         training_dataset, test_df, predict=False, stop_randomization=True
@@ -65,7 +61,6 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
 
     training_dataset, validation_dataset, test_dataset = build_datasets(df)
 
-    # pin_memory=False prevents CUDA deadlock in Colab
     train_dataloader = training_dataset.to_dataloader(train=True, batch_size=32, num_workers=0, pin_memory=False)
     val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=32, num_workers=0, pin_memory=False)
     test_dataloader = test_dataset.to_dataloader(train=False, batch_size=32, num_workers=0, pin_memory=False)
@@ -77,7 +72,7 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
         attention_head_size=4,
         dropout=dropout,
         hidden_continuous_size=hidden_size // 2,
-        output_size=3,  # quantiles: [0.01, 0.50, 0.99]
+        output_size=3,
         loss=QuantileLoss(quantiles=[0.01, 0.5, 0.99]),
         optimizer="adam"
     )
@@ -89,11 +84,12 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
     if pruning_callback is not None:
         callbacks_list.append(pruning_callback)
 
-    # FIX: Added devices=1 and removed num_sanity_val_steps=0 to prevent Colab GPU hang
+    # Explicit single_device strategy prevents Colab DDP deadlocks
     trainer = pl.Trainer(
         max_epochs=max_epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1 if torch.cuda.is_available() else "auto",
+        strategy="single_device",
         gradient_clip_val=0.1,
         callbacks=callbacks_list,
         enable_progress_bar=enable_progress_bar,
@@ -101,7 +97,6 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
     )
 
     trainer.fit(tft, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
-
     best_val_loss = early_stop_callback.best_score.item()
 
     return tft, trainer, best_val_loss, test_dataloader
