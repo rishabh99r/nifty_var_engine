@@ -56,7 +56,6 @@ def build_datasets(df, encoder_length=60):
     return training_dataset, validation_dataset, test_dataset
 
 def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, enable_progress_bar=True, pruning_callback=None):
-    print(f"\n[TFT] === Initializing Network Engine (Seed: {seed}) ===")
     pl.seed_everything(seed, workers=True)
 
     training_dataset, validation_dataset, test_dataset = build_datasets(df)
@@ -84,12 +83,11 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
     if pruning_callback is not None:
         callbacks_list.append(pruning_callback)
 
-    # Explicit single_device strategy prevents Colab DDP deadlocks
+    # Clean trainer: auto accelerator/devices prevents Colab device mismatches
     trainer = pl.Trainer(
         max_epochs=max_epochs,
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        devices=1 if torch.cuda.is_available() else "auto",
-        strategy="single_device",
+        accelerator="auto",
+        devices="auto",
         gradient_clip_val=0.1,
         callbacks=callbacks_list,
         enable_progress_bar=enable_progress_bar,
