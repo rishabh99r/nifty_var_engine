@@ -21,7 +21,6 @@ def run_rolling_garch(df, csv_path="master_df.csv"):
 
     print("[GARCH] No saved data. Starting dynamic Skew-T GJR-GARCH calculation...")
     print("[GARCH] NOTE: ~4,500 model fits on first run. Expect 60-90 mins on Colab CPU.")
-    print("[GARCH] The progress bar below confirms it is running — not frozen.")
 
     window_size = 252
     df = df.copy()
@@ -55,7 +54,9 @@ def run_rolling_garch(df, csv_path="master_df.csv"):
         mean_t1 = forecast.mean.iloc[-1, 0]
         vol_t1 = np.sqrt(forecast.variance.iloc[-1, 0])
 
-        df.iloc[i, df.columns.get_loc('GARCH_Resid')] = res.resid.iloc[-1]
+        # FIX (Point 2): Inject STANDARDIZED residual z_t = e_t / sigma_t
+        # res.std_resid gets the scale-free Skew-t innovation
+        df.iloc[i, df.columns.get_loc('GARCH_Resid')] = res.std_resid.iloc[-1]
         df.iloc[i, df.columns.get_loc('GARCH_Vol')] = vol_t1
         df.iloc[i, df.columns.get_loc('GARCH_VaR_99')] = mean_t1 + (vol_t1 * dynamic_multiplier)
 
