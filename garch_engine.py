@@ -34,7 +34,8 @@ def run_rolling_garch(df, csv_path="master_df.csv"):
     for i in iterator:
         train_window = df['Log_Ret'].iloc[i - window_size: i]
 
-        model = arch_model(train_window, vol='Garch', p=1, q=1, dist='skewt')
+        # o=1 enables the asymmetric leverage term (GJR-GARCH specification)
+        model = arch_model(train_window, vol='Garch', p=1, o=1, q=1, dist='skewt')
         res = model.fit(disp='off', update_freq=0, show_warning=False)
 
         forecast = res.forecast(horizon=1, align='origin')
@@ -54,8 +55,7 @@ def run_rolling_garch(df, csv_path="master_df.csv"):
         mean_t1 = forecast.mean.iloc[-1, 0]
         vol_t1 = np.sqrt(forecast.variance.iloc[-1, 0])
 
-        # FIX (Point 2): Inject STANDARDIZED residual z_t = e_t / sigma_t
-        # res.std_resid gets the scale-free Skew-t innovation
+        # Extract standardized residual z_t = e_t / sigma_t from the GJR filter
         df.iloc[i, df.columns.get_loc('GARCH_Resid')] = res.std_resid.iloc[-1]
         df.iloc[i, df.columns.get_loc('GARCH_Vol')] = vol_t1
         df.iloc[i, df.columns.get_loc('GARCH_VaR_99')] = mean_t1 + (vol_t1 * dynamic_multiplier)
