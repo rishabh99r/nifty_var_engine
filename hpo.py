@@ -4,7 +4,6 @@ import time
 import warnings
 import gc
 import torch
-from optuna_integration import PyTorchLightningPruningCallback
 from tft_model import train_tft
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -19,32 +18,28 @@ def optimize_hyperparameters(df, n_trials=30):
         learning_rate = trial.suggest_float("learning_rate", 1e-3, 0.1, log=True)
 
         t0 = time.time()
-        pruning_callback = PyTorchLightningPruningCallback(trial, monitor="val_loss")
 
         try:
+            # Set max_epochs to 30 for faster HPO sweeps
             _, _, val_loss, _ = train_tft(
                 df=df,
                 hidden_size=hidden_size,
                 dropout=dropout,
                 learning_rate=learning_rate,
                 seed=42,
-                max_epochs=50,
+                max_epochs=30,
                 enable_progress_bar=False,
-                pruning_callback=pruning_callback
+                pruning_callback=None
             )
             elapsed = time.time() - t0
             print(f"[HPO] Trial {trial.number+1:02d}/{n_trials} | hidden={hidden_size:<3d} | dropout={dropout:.1f} | lr={learning_rate:.5f} | Val Loss: {val_loss:.4f} | Time: {elapsed:.0f}s")
             return val_loss
-
-        except optuna.exceptions.TrialPruned:
-            raise
 
         except Exception as e:
             print(f"[HPO] Trial {trial.number+1:02d}/{n_trials} FAILED | Error: {e}")
             return float("inf")
 
         finally:
-            # FIX (Point 4): Force memory cleanup after every trial to prevent Colab GPU/CPU freezes
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

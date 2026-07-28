@@ -1,3 +1,4 @@
+# tft_model.py
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping
 from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer, QuantileLoss
@@ -24,7 +25,7 @@ def build_datasets(df, encoder_length=60):
         "Global_CPU_Ret"
     ]
 
-    # 1. Train Dataset (Historical training data up to val_cutoff)
+    # 1. Train Dataset
     train_df = df[df["time_idx"] <= val_cutoff]
     training_dataset = TimeSeriesDataSet(
         train_df,
@@ -44,13 +45,13 @@ def build_datasets(df, encoder_length=60):
         allow_missing_timesteps=True
     )
 
-    # 2. Validation Dataset (Includes encoder_length buffer before val_cutoff for windowing)
+    # 2. Validation Dataset
     val_df = df[(df["time_idx"] > val_cutoff - encoder_length) & (df["time_idx"] <= test_cutoff)]
     validation_dataset = TimeSeriesDataSet.from_dataset(
         training_dataset, val_df, predict=False, stop_randomization=True
     )
 
-    # 3. Test Dataset (Includes encoder_length buffer before test_cutoff)
+    # 3. Test Dataset
     test_df = df[df["time_idx"] > test_cutoff - encoder_length]
     test_dataset = TimeSeriesDataSet.from_dataset(
         training_dataset, test_df, predict=False, stop_randomization=True
@@ -58,15 +59,16 @@ def build_datasets(df, encoder_length=60):
 
     return training_dataset, validation_dataset, test_dataset
 
-def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, enable_progress_bar=False, pruning_callback=None):
+def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, enable_progress_bar=True, pruning_callback=None):
     print(f"\n[TFT] === Initializing Network Engine (Seed: {seed}) ===")
     pl.seed_everything(seed, workers=True)
 
     training_dataset, validation_dataset, test_dataset = build_datasets(df)
 
-    train_dataloader = training_dataset.to_dataloader(train=True, batch_size=32, num_workers=0)
-    val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=32, num_workers=0)
-    test_dataloader = test_dataset.to_dataloader(train=False, batch_size=32, num_workers=0)
+    # pin_memory=False prevents CUDA deadlock in Colab
+    train_dataloader = training_dataset.to_dataloader(train=True, batch_size=32, num_workers=0, pin_memory=False)
+    val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=32, num_workers=0, pin_memory=False)
+    test_dataloader = test_dataset.to_dataloader(train=False, batch_size=32, num_workers=0, pin_memory=False)
 
     tft = TemporalFusionTransformer.from_dataset(
         training_dataset,
@@ -87,14 +89,14 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
     if pruning_callback is not None:
         callbacks_list.append(pruning_callback)
 
+    # FIX: Added devices=1 and removed num_sanity_val_steps=0 to prevent Colab GPU hang
     trainer = pl.Trainer(
         max_epochs=max_epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
+        devices=1 if torch.cuda.is_available() else "auto",
         gradient_clip_val=0.1,
         callbacks=callbacks_list,
-        deterministic=False,
         enable_progress_bar=enable_progress_bar,
-        num_sanity_val_steps=0,
         logger=False
     )
 
@@ -102,5 +104,4 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
 
     best_val_loss = early_stop_callback.best_score.item()
 
-    # Returns tft, trainer, val_loss, and test_dataloader for out-of-sample inference
     return tft, trainer, best_val_loss, test_dataloader
