@@ -5,54 +5,66 @@ import warnings
 import gc
 import os
 import torch
+import numpy as np
 from tqdm import tqdm
 from tft_model import train_tft
+from metrics import quantile_loss
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore", category=optuna.exceptions.ExperimentalWarning)
 
 def optimize_hyperparameters(df, n_trials=30):
-    print("\n[HPO] === Starting Robust Hyperparameter Optimization ===")
+    print("\n[HPO] === Starting Robust Hyperparameter Optimization (Target: 99% VaR Tick Loss) ===")
 
-    # WIPE OLD DB TO PREVENT TRIAL COUNT LEAKAGE (e.g., Trial 48/30 errors)
     db_path = "tft_nifty_optimization.db"
     if os.path.exists(db_path):
         os.remove(db_path)
         print(f"[HPO] Removed stale database '{db_path}'. Starting fresh 30-trial study.")
 
-    # Master progress bar for the entire HPO phase
-    pbar = tqdm(total=n_trials, desc="[HPO] Optimizing Architecture", unit="trial", leave=True)
+    pbar = tqdm(total=n_trials, desc="[HPO] Optimizing 99% VaR Tail Precision", unit="trial", leave=True)
 
     def objective(trial):
-        hidden_size = trial.suggest_categorical("hidden_size", [16, 32, 64, 128])
-        dropout = trial.suggest_float("dropout", 0.1, 0.5, step=0.1)
-        learning_rate = trial.suggest_float("learning_rate", 1e-3, 0.1, log=True)
+        # Clamped parameter bounds based on structural capacity limits
+        hidden_size = trial.suggest_categorical("hidden_size", [16, 32, 64])
+        dropout = trial.suggest_float("dropout", 0.2, 0.4, step=0.1)
+        learning_rate = trial.suggest_float("learning_rate", 1e-4, 5e-3, log=True)
 
         try:
-            # enable_progress_bar=False keeps console clean while tqdm tracks overall progress
-            _, _, val_loss, _ = train_tft(
+            tft, _, _, val_dataloader = train_tft(
                 df=df,
                 hidden_size=hidden_size,
                 dropout=dropout,
                 learning_rate=learning_rate,
                 seed=42,
-                max_epochs=30,
+                max_epochs=35,
                 enable_progress_bar=False,
                 pruning_callback=None
             )
 
-            # Update live progress bar postfix with current and best scores
-            best_val = trial.study.best_value if len(trial.study.trials) > 0 and trial.study.best_value is not None else val_loss
-            best_val = min(best_val, val_loss)
+            # Extract validation predictions and isolate 99% VaR (q=0.01 tail)
+            val_preds, val_index = tft.predict(val_dataloader, mode="quantiles", return_index=True)
+            val_var_99 = val_preds[:, 0, 0].numpy()
+
+            # Align actual validation returns
+            val_actuals = df.loc[df['time_idx'].isin(val_index['time_idx']), 'Log_Ret'].values
+
+            # OPTUNA TARGET: Exact 0.01 Asymmetric Tick Loss on Validation Slice
+            val_q01_loss = np.mean(quantile_loss(val_actuals, val_var_99, q=0.01))
+
+            try:
+                best_val = trial.study.best_value
+            except ValueError:
+                best_val = val_q01_loss
+            best_val = min(best_val, val_q01_loss)
 
             pbar.set_postfix({
-                "Best Loss": f"{best_val:.4f}",
-                "Curr Loss": f"{val_loss:.4f}",
+                "Best q01 Loss": f"{best_val:.4f}",
+                "Curr q01 Loss": f"{val_q01_loss:.4f}",
                 "Hidden": hidden_size,
                 "LR": f"{learning_rate:.4f}"
             })
             pbar.update(1)
-            return val_loss
+            return val_q01_loss
 
         except Exception as e:
             tqdm.write(f"[HPO] Trial {trial.number+1} FAILED | Error: {e}")
@@ -74,6 +86,6 @@ def optimize_hyperparameters(df, n_trials=30):
     study.optimize(objective, n_trials=n_trials)
     pbar.close()
 
-    print(f"\n[HPO] Optimization Complete | Best Val Loss: {study.best_value:.4f}")
+    print(f"\n[HPO] Optimization Complete | Best 99% VaR Tick Loss: {study.best_value:.4f}")
     print(f"[HPO] Optimal Parameters: {study.best_params}")
     return study.best_params
