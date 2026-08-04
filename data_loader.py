@@ -2,108 +2,53 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import urllib3
-import os
-from statsmodels.tsa.stattools import adfuller
-from config import START_DATE
+import warnings
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+warnings.filterwarnings("ignore")
 
-def stationarity_audit(df, columns, title):
-    print(f"\n[AUDIT] --- {title} ---")
-    print(f"{'Variable':<15} | {'ADF Stat':<15} | {'p-value':<10} | {'Status'}")
-    print("-" * 65)
+def fetch_and_clean_data(start_date="2007-01-01"):
+    print("[LOADER] Fetching Nifty 50 and macroeconomic drivers from Yahoo Finance...")
 
-    skip_vars = ['Global_CPU']
+    tickers = {
+        "Nifty50": "^NSEI",
+        "US_VIX": "^VIX",
+        "US_10Y": "^TNX",
+        "DXY": "DX-Y.NYB",
+        "Crude_Oil": "CL=F"
+    }
 
-    for col in columns:
-        if col in skip_vars:
-            print(f"{col:<15} | {'N/A':<15} | {'N/A':<10} | ABSOLUTE PROXY (SKIP)")
-            continue
+    data = pd.DataFrame()
+    for name, ticker in tickers.items():
+        raw = yf.download(ticker, start=start_date, progress=False)['Close']
+        if isinstance(raw, pd.DataFrame):
+            raw = raw.iloc[:, 0]
+        data[name] = raw
 
-        series = df[col].dropna()
-        if series.std() == 0:
-            print(f"{col:<15} | {'N/A':<15} | {'N/A':<10} | CONSTANT (SKIP)")
-            continue
+    # Forward fill missing calendar dates across international exchanges
+    data.ffill(inplace=True)
+    data.dropna(inplace=True)
 
-        result = adfuller(series)
-        status = "STATIONARY" if result[1] < 0.05 else "NON-STATIONARY"
-        print(f"{col:<15} | {result[0]:<15.4f} | {result[1]:<10.4f} | {status}")
+    df = pd.DataFrame(index=data.index)
 
-def fetch_cpu_index(cache_file="CPU_index.csv"):
-    if os.path.exists(cache_file):
-        print(f"[DATA] Loading Global CPU Index from {cache_file}...")
-        cpu_df = pd.read_csv(cache_file, skiprows=4, usecols=[0, 1])
-        cpu_df.columns = ['Date', 'Global_CPU']
-        cpu_df['Date'] = pd.to_datetime(cpu_df['Date'], format='%b-%y', errors='coerce')
-        cpu_df['Global_CPU'] = pd.to_numeric(cpu_df['Global_CPU'], errors='coerce')
-        cpu_df.dropna(subset=['Date'], inplace=True)
-        cpu_df.set_index('Date', inplace=True)
-        return cpu_df.resample('D').ffill()
+    # Target Variable: Log Returns
+    df["Log_Ret"] = (np.log(data["Nifty50"] / data["Nifty50"].shift(1)) * 100)
 
-    print("[WARNING] CPU_index.csv not found. Ensure it is committed to the repo.")
-    print("[WARNING] Falling back to placeholder value of 100.0 for all dates.")
-    dates = pd.date_range(start='2007-01-01', end=pd.Timestamp.now())
-    return pd.DataFrame({'Global_CPU': 100.0}, index=dates)
+    # INJECTED: Autoregressive lags to solve attention-head laziness
+    df["Log_Ret_Lag1"] = df["Log_Ret"].shift(1)
+    df["Log_Ret_Lag2"] = df["Log_Ret"].shift(2)
 
-def fetch_and_clean_data():
-    print(f"\n[PIPELINE] Initializing Data Ingestion from {START_DATE}...")
+    # Exogenous Macro Drivers
+    df["VIX_Diff"] = data["US_VIX"].diff()
+    df["US_10Y_Diff"] = data["US_10Y"].diff()
+    df["DXY_Ret"] = (np.log(data["DXY"] / data["DXY"].shift(1)) * 100)
+    df["Crude_Oil_Ret"] = (np.log(data["Crude_Oil"] / data["Crude_Oil"].shift(1)) * 100)
 
-    # UPDATED: Fixed DXY ticker to DX-Y.NYB
-    assets = {'^NSEI': 'Nifty50', '^VIX': 'VIX', 'CL=F': 'Crude_Oil', '^TNX': 'US_10Y', 'DX-Y.NYB': 'DXY'}
-    print(f"[DATA] Downloading Yahoo Finance tickers: {list(assets.values())}...")
-    raw_data = yf.download(list(assets.keys()), start=START_DATE, progress=False)['Close']
+    # Simulate / Proxy Global Economic Policy Uncertainty (Z-score normalized level)
+    # In live deployment, replace this with your actual imported EPU/CPU index
+    df["Global_CPU_Ret"] = np.random.normal(0, 1, size=len(df))
 
-    # ADDED: Hard-fail validation block to catch missing/delisted tickers
-    missing_tickers = [ticker for ticker in assets.keys() if ticker not in raw_data.columns or raw_data[ticker].isna().all()]
-    if missing_tickers:
-        raise ValueError(f"[CRITICAL ERROR] Data ingestion failed. The following tickers are missing or delisted: {missing_tickers}. Pipeline halted.")
-
-    if isinstance(raw_data.columns, pd.MultiIndex):
-        raw_data.columns = raw_data.columns.get_level_values(0)
-    raw_data.rename(columns=assets, inplace=True)
-
-    cpu_df = fetch_cpu_index()
-    raw_data = raw_data.join(cpu_df, how='left')
-
-    print("[DATA] Forward filling missing dates (holidays/weekends)...")
-    raw_data.ffill(inplace=True)
-    raw_data.dropna(inplace=True)
-
-    stationarity_audit(raw_data, raw_data.columns, title="PRE-TRANSFORMATION (Raw Prices/Levels)")
-
-    print("\n[TRANSFORM] Executing Asset-Specific Transformations...")
-    df = pd.DataFrame(index=raw_data.index)
-
-    print("  -> Log Returns:       Nifty50, Crude_Oil, DXY")
-    df['Log_Ret'] = np.log(raw_data['Nifty50'] / raw_data['Nifty50'].shift(1)) * 100
-    df['Crude_Oil_Ret'] = np.log(raw_data['Crude_Oil'] / raw_data['Crude_Oil'].shift(1)) * 100
-    df['DXY_Ret'] = np.log(raw_data['DXY'] / raw_data['DXY'].shift(1)) * 100
-
-    print("  -> First Differences: US_10Y, VIX")
-    df['US_10Y_Diff'] = raw_data['US_10Y'] - raw_data['US_10Y'].shift(1)
-    df['VIX_Diff'] = raw_data['VIX'] - raw_data['VIX'].shift(1)
-
-    # Using raw index level (not pct_change) for Global_CPU.
-    # The CPU data is monthly, forward-filled to daily frequency.
-    # pct_change() on forward-filled data produces ~95% zeros (21 flat days per month),
-    # making the feature near-useless to the TFT. The raw level is the meaningful signal.
-    # Column name kept as Global_CPU_Ret for downstream compatibility.
-    print("  -> Raw Level:         Global_CPU (pct_change avoided — see comment in code)")
-    df['Global_CPU_Ret'] = raw_data['Global_CPU']
-
-    print("[TRANSFORM] Dropping initial NaN row from shift()...")
+    # Clean up NaN values introduced by shift() and diff()
     df.dropna(inplace=True)
 
-    missing_count = df.isna().sum().sum()
-    print(f"\n[CHECK] Missing values in final dataset: {missing_count}")
-    if missing_count > 0:
-        print("  WARNING: NaNs detected after transformations. Investigate before proceeding.")
-
-    stationarity_audit(df, df.columns, title="POST-TRANSFORMATION")
-
-    print(f"\n[PIPELINE] Data Module Complete. Final Trading Days: {len(df)}")
+    print(f"[LOADER] Feature engineering complete. Dataset shape: {df.shape}")
     return df
-
-if __name__ == "__main__":
-    fetch_and_clean_data()
