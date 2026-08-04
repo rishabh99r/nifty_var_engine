@@ -1,4 +1,3 @@
-# data_loader.py
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -38,7 +37,6 @@ def fetch_and_clean_data(start_date="2007-01-01"):
     df = pd.DataFrame(index=data.index)
     df["Log_Ret"] = (np.log(data["Nifty50"] / data["Nifty50"].shift(1)) * 100)
 
-    # Lags resolve attention head laziness
     df["Log_Ret_Lag1"] = df["Log_Ret"].shift(1)
     df["Log_Ret_Lag2"] = df["Log_Ret"].shift(2)
 

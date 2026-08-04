@@ -1,4 +1,3 @@
-# metrics.py
 import numpy as np
 import scipy.stats as stats
 
@@ -8,7 +7,6 @@ def quantile_loss(actual, forecast, q=0.01):
 
 def calculate_metrics(results_df):
     total_days = len(results_df)
-
     tft_failures = (results_df['Actual'] < results_df['TFT_VaR_99']).sum()
     tft_failure_rate = tft_failures / total_days
 
@@ -27,7 +25,6 @@ def calculate_metrics(results_df):
     results_df['TFT_Tick_Loss'] = quantile_loss(results_df['Actual'], results_df['TFT_VaR_99'], q=0.01)
     results_df['GARCH_Tick_Loss'] = quantile_loss(results_df['Actual'], results_df['GARCH_VaR_99'], q=0.01)
 
-    # Diebold-Mariano Newey-West HAC Variance
     d_t = (results_df['GARCH_Tick_Loss'] - results_df['TFT_Tick_Loss']).values
     mean_diff = np.mean(d_t)
 

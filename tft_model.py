@@ -1,4 +1,3 @@
-# tft_model.py
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping
 from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer, QuantileLoss
@@ -49,7 +48,6 @@ def train_tft(df, hidden_size, dropout, learning_rate, seed, max_epochs=150, ena
     val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=64, num_workers=0, pin_memory=False)
     test_dataloader = test_dataset.to_dataloader(train=False, batch_size=64, num_workers=0, pin_memory=False)
 
-    # CRITICAL FIX: Removed quantiles_weights completely.
     tft = TemporalFusionTransformer.from_dataset(
         training_dataset, learning_rate=learning_rate, hidden_size=hidden_size,
         attention_head_size=4, dropout=dropout, hidden_continuous_size=hidden_size // 2,

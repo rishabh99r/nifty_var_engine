@@ -1,4 +1,3 @@
-# garch_engine.py
 import pandas as pd
 import numpy as np
 import os
@@ -31,7 +30,6 @@ def run_rolling_garch(df, csv_path="master_df.csv"):
 
     for i in iterator:
         train_window = df['Log_Ret'].iloc[i - window_size: i]
-        # Asymmetric Leverage (o=1)
         model = arch_model(train_window, vol='Garch', p=1, o=1, q=1, dist='skewt')
         res = model.fit(disp='off', update_freq=0, show_warning=False)
         forecast = res.forecast(horizon=1, align='origin')
