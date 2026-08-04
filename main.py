@@ -22,6 +22,7 @@ def generate_predictions(tft, test_dataloader, df):
     merged_df = results_df.merge(df[['time_idx', 'Log_Ret', 'GARCH_VaR_99']], on="time_idx", how="inner")
     merged_df.rename(columns={"Log_Ret": "Actual"}, inplace=True)
 
+    results_df.to_csv("test_tft_predictions.csv", index=True)
     return merged_df
 
 def main():
@@ -31,7 +32,6 @@ def main():
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"[ERROR] {csv_path} not found! Run 'python build_data.py' first to generate data.")
 
-    print(f"[LOAD] Loading pre-computed dataset from {csv_path}...")
     master_df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
     print(f"[LOAD] Dataset successfully loaded ({len(master_df)} trading days).")
 
@@ -45,7 +45,8 @@ def main():
         print(f"\n[AUDIT] Launching Network with Seed: {seed}")
         set_seed(seed)
 
-        tft, trainer, val_loss, test_dataloader = train_tft(
+        # Extract test_dataloader for final inference
+        tft, trainer, val_loss, _, test_dataloader = train_tft(
             df=master_df,
             hidden_size=best_params['hidden_size'],
             dropout=best_params['dropout'],
