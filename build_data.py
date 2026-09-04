@@ -1,13 +1,33 @@
 # build_data.py
 import os
 import glob
-import pandas as pd
+import warnings
 import numpy as np
+import pandas as pd
 import yfinance as yf
 from arch import arch_model
-import warnings
 
 warnings.filterwarnings("ignore")
+
+
+def compute_garman_klass(df):
+    """
+    Computes Garman-Klass historical volatility proxy from daily OHLC prices.
+    Requires columns: 'Open', 'High', 'Low', 'Close'.
+    Up to 8x more statistically efficient than close-to-close squared returns.
+    """
+    df = df[(df['High'] > 0) & (df['Low'] > 0) & (df['Open'] > 0) & (df['Close'] > 0)].copy()
+
+    log_hl = np.log(df['High'] / df['Low'])
+    log_co = np.log(df['Close'] / df['Open'])
+
+    # Garman-Klass Variance Formula
+    df['GK_Variance'] = 0.5 * (log_hl ** 2) - (2 * np.log(2) - 1) * (log_co ** 2)
+
+    # Convert to annualized percentage standard deviation
+    df['GK_Vol'] = np.sqrt(np.maximum(df['GK_Variance'], 1e-8) * 252) * 100
+    return df
+
 
 def purge_stale_artifacts():
     """
@@ -16,7 +36,6 @@ def purge_stale_artifacts():
     """
     print("\n=== SYSTEM SANITIZATION: PURGING STALE ARTIFACTS ===")
 
-    # Target files that introduce historical cache pollution or state corruption
     stale_files = [
         "master_df.csv",
         "test_tft_predictions.csv",
@@ -32,71 +51,135 @@ def purge_stale_artifacts():
             except Exception as e:
                 print(f"  [WARNING] Could not purge {file}: {str(e)}")
 
-    # Also wipe out residual PyTorch Lightning checkpoints from aborted training sessions
+    # Wipe out residual PyTorch Lightning checkpoints from aborted training sessions
     stale_checkpoints = glob.glob("lightning_logs/*/checkpoints/*.ckpt")
     for ckpt in stale_checkpoints:
         try:
             os.remove(ckpt)
             print(f"  -> Purged abandoned model checkpoint: {ckpt}")
-        except Exception as e:
+        except Exception:
             pass
 
-    print("=== WORKSPACE CLEAR: LAUNCHING FRESH DATA ENGINEING PIPELINE ===\n")
+    print("=== WORKSPACE CLEAR: LAUNCHING FRESH DATA ENGINEERING PIPELINE ===\n")
+
+
+def clean_yf_columns(raw_df):
+    """Flattens potential MultiIndex columns from recent yfinance updates."""
+    if isinstance(raw_df.columns, pd.MultiIndex):
+        raw_df.columns = raw_df.columns.get_level_values(0)
+    return raw_df.copy()
+
+
+def fit_gjr_garch_per_series(returns_series):
+    """
+    Fits Skew-T GJR-GARCH(1,1) model on log returns to extract conditional volatility,
+    scale-free standardized innovations (z_t), and the parametric 99% VaR floor.
+    """
+    am = arch_model(returns_series, mean='Constant', vol='Garch', p=1, o=1, q=1, dist='skewt')
+    res = am.fit(disp='off')
+
+    vol = res.conditional_volatility
+    resid = res.std_resid  # z_t = (r_t - mu) / sigma_t (standardized innovation)
+
+    # Parametric 99% quantile boundary (Student-t inverse CDF)
+    q_dist = res.model.distribution.ppf(0.01, res.params[-2:])
+    mu = res.params.get('mu', 0.0)
+    var_99 = mu + vol * q_dist
+
+    return vol, resid, var_99
+
 
 def generate_clean_production_data():
     # 1. Trigger the isolation purge
     purge_stale_artifacts()
 
-    print("[ETL] Fetching historical index spot and macro volatility pairs...")
-    # Pull fresh underlying arrays (Using Nifty 50 and US VIX as baseline)
-    # Target dates bound out-of-sample matching timelines up to 2026
-    nifty = yf.download("^NSEI", start="2015-01-01", end="2026-08-01", progress=False)
-    vix = yf.download("^VIX", start="2015-01-01", end="2026-08-01", progress=False)
+    print("[ETL] Fetching historical index panel and cross-border volatility...")
+    start_date = "2015-01-01"
+    end_date = "2026-08-01"
 
-    if nifty.empty or vix.empty:
-        raise ValueError("[FATAL] Yahoo Finance API failure. Unable to download spot sequences.")
+    # Define the domestic multi-series panel tickers
+    tickers = {
+        'NIFTY50': '^NSEI',
+        'BANKNIFTY': '^NSEBANK',
+        'NIFTYIT': '^CNXIT'
+    }
 
-    # Calculate daily log returns
-    nifty['Log_Ret'] = np.log(nifty['Close'] / nifty['Close'].shift(1)) * 100
+    # 2. Download and prepare exogenous macro volatility (US VIX)
+    raw_vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)
+    if raw_vix.empty:
+        raise ValueError("[FATAL] Yahoo Finance API failure: Unable to download ^VIX.")
 
-    # Structural merge
-    df = pd.DataFrame(index=nifty.index)
-    df['Log_Ret'] = nifty['Log_Ret']
-    df['US_VIX'] = vix['Close']
-    df = df.dropna()
+    raw_vix = clean_yf_columns(raw_vix)
+    vix_close = raw_vix['Close'].dropna()
 
-    # 2. Fit GJR-GARCH programmatically to extract scale-free innovations
-    print("[ECONOMETRICS] Fitting baseline rolling Skew-T GJR-GARCH filter...")
-    returns = df['Log_Ret'].values
-    am = arch_model(returns, vol='Garch', p=1, o=1, q=1, dist='skewt')
-    res = am.fit(disp='off')
+    # Strict Point-in-Time (PIT) lag enforcement: shift by 1 to prevent lookahead bias
+    macro_df = pd.DataFrame(index=vix_close.index)
+    macro_df['US_VIX'] = vix_close.shift(1)
+    macro_df['US_VIX_Diff'] = vix_close.diff().shift(1)
+    macro_df['VIX_Diff'] = macro_df['US_VIX_Diff']  # Dual-alias for backward compatibility
+    macro_df = macro_df.dropna()
 
-    # Store standard conditional volatility and residuals
-    df['GARCH_Vol'] = res.conditional_volatility
-    df['GARCH_Resid'] = res.resid
+    # 3. Process each ticker in the multi-series panel
+    ticker_dfs = []
 
-    # Derive the mathematical 99% VaR Parametric floor generated by the econometric base
-    # q=0.01 threshold maps to the skewed Student-t inverse CDF
-    q_dist = res.model.distribution.ppf(0.01, res.params[-2:]) # extract nu and lambda
-    df['GARCH_VaR_99'] = res.params['omega'] + df['GARCH_Vol'] * q_dist
+    for label, symbol in tickers.items():
+        print(f"[ETL] Downloading and processing series: {label} ({symbol})...")
+        raw_ticker = yf.download(symbol, start=start_date, end=end_date, progress=False)
+        if raw_ticker.empty:
+            raise ValueError(f"[FATAL] Failed downloading data for {symbol}.")
 
-    # 3. Generate sequential temporal sequences for the Transformer model
-    df = df.reset_index()
-    df.rename(columns={df.columns[0]: 'Date'}, inplace=True)
-    df['time_idx'] = df.index
+        raw_ticker = clean_yf_columns(raw_ticker)
+        df = raw_ticker[['Open', 'High', 'Low', 'Close', 'Volume']].dropna().copy()
 
-    # Feature lag engineering (Lagged inputs to avoid lookahead bias)
-    df['Log_Ret_Lag1'] = df['Log_Ret'].shift(1)
-    df['Log_Ret_Lag2'] = df['Log_Ret'].shift(2)
-    df['VIX_Diff'] = df['US_VIX'].diff()
-    df['India_VIX_Diff'] = df['Log_Ret'].rolling(5).std().diff()
+        # Compute percentage log returns
+        df['Log_Ret'] = 100 * np.log(df['Close'] / df['Close'].shift(1))
+        df = df.dropna()
 
-    df = df.dropna()
+        # Compute Garman-Klass range-based volatility proxy
+        df = compute_garman_klass(df)
+
+        # Fit Stage 1 Skew-T GJR-GARCH filter
+        vol, resid, var_99 = fit_gjr_garch_per_series(df['Log_Ret'])
+        df['GARCH_Vol'] = vol
+        df['GARCH_sigma'] = vol       # Dual-alias for TFT known_reals
+        df['GARCH_Resid'] = resid
+        df['GARCH_resid'] = resid     # Dual-alias for TFT unknown_reals
+        df['GARCH_VaR_99'] = var_99
+
+        # Lag features (PIT-safe, observable at t-1)
+        df['Log_Ret_Lag1'] = df['Log_Ret'].shift(1)
+        df['Log_Ret_Lag2'] = df['Log_Ret'].shift(2)
+        df['India_VIX_Diff'] = df['Log_Ret'].rolling(5).std().diff().shift(1)
+
+        # Join cross-border macro features
+        df = df.join(macro_df, how='inner')
+        df = df.dropna()
+
+        df['ticker'] = label
+        df['Date'] = df.index.strftime('%Y-%m-%d')
+        ticker_dfs.append(df)
+
+    # 4. Synchronize trading dates across all panel tickers
+    common_dates = sorted(list(set(ticker_dfs[0]['Date']).intersection(*[set(d['Date']) for d in ticker_dfs[1:]])))
+    date_to_time_idx = {d: i for i, d in enumerate(common_dates)}
+
+    aligned_dfs = []
+    for df in ticker_dfs:
+        df_aligned = df[df['Date'].isin(common_dates)].copy()
+        df_aligned['time_idx'] = df_aligned['Date'].map(date_to_time_idx)
+        aligned_dfs.append(df_aligned)
+
+    # 5. Concatenate and sort panel long matrix
+    master_df = pd.concat(aligned_dfs, ignore_index=True)
+    master_df = master_df.sort_values(by=['time_idx', 'ticker']).reset_index(drop=True)
 
     output_path = "master_df.csv"
-    df.to_csv(output_path, index=False)
-    print(f"[SUCCESS] Reconstructed clean matrix database at: {output_path}")
-    print(f"Total Operational Observations: {len(df)} trading horizons.")
+    master_df.to_csv(output_path, index=False)
+
+    print(f"\n[SUCCESS] Reconstructed clean multi-series panel at: {output_path}")
+    print(f"Total Observations: {len(master_df)} rows across {len(tickers)} tickers.")
+    print(f"Common Lookback Steps (time_idx): 0 to {master_df['time_idx'].max()} ({len(common_dates)} days).")
+
 
 if __name__ == "__main__":
     generate_clean_production_data()
