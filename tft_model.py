@@ -18,22 +18,24 @@ class EpochHeartbeat(pl.Callback):
             print(f"    >>> [Heartbeat] Epoch {trainer.current_epoch:02d}/{trainer.max_epochs} | Val Loss: {val_loss:.4f}", flush=True)
 
 
-def build_datasets(df, encoder_length=21, backtest_days=250):
+# In tft_model.py: Update the build_datasets function definition and default
+def build_datasets(df, encoder_length=21, backtest_days=500, val_days=250):
     """
-    Builds training, validation, and testing TimeSeriesDataSets for the multi-series panel.
+    Splits multi-series panel into:
+      - Test: Last 500 trading days
+      - Validation: 250 trading days immediately preceding the test window
+      - Training: All remaining historical observations (~2,000 days per ticker)
     """
     df = df.copy()
     df['ticker'] = df['ticker'].astype(str)
 
     max_idx = df["time_idx"].max()
     test_cutoff = max_idx - backtest_days
-    val_cutoff = test_cutoff - backtest_days
+    val_cutoff = test_cutoff - val_days
 
-    # Features known for t+1 (GARCH conditional sigma calculated at t, PIT macro signals)
     candidate_known = ["time_idx", "GARCH_sigma", "US_VIX_Diff", "India_VIX_Diff", "FII_Net_Flow_Z"]
     known_reals = [col for col in candidate_known if col in df.columns]
 
-    # Contemporaneous and lagged historical features
     candidate_unknown = [
         "Log_Ret", "GARCH_resid", "GK_Vol",
         "Log_Ret_Lag1", "Log_Ret_Lag2", "TRMI_Fear"
@@ -61,11 +63,9 @@ def build_datasets(df, encoder_length=21, backtest_days=250):
         allow_missing_timesteps=True
     )
 
-    # Validation: Lookback window rolling into val period
     val_df = df[(df["time_idx"] > val_cutoff - encoder_length) & (df["time_idx"] <= test_cutoff)].copy()
     validation_dataset = TimeSeriesDataSet.from_dataset(training_dataset, val_df, predict=False, stop_randomization=True)
 
-    # Testing: Lookback window rolling into out-of-sample backtest period
     test_df = df[df["time_idx"] > test_cutoff - encoder_length].copy()
     test_dataset = TimeSeriesDataSet.from_dataset(training_dataset, test_df, predict=False, stop_randomization=True)
 
@@ -73,12 +73,12 @@ def build_datasets(df, encoder_length=21, backtest_days=250):
 
 
 def train_tft(df, hidden_size=32, dropout=0.15, learning_rate=1e-3, seed=42,
-              max_epochs=150, encoder_length=21, enable_progress_bar=True, pruning_callback=None):
-    """
-    Trains the Temporal Fusion Transformer on the multi-series panel.
-    """
+              max_epochs=80, encoder_length=21, backtest_days=500, enable_progress_bar=True, pruning_callback=None):
     pl.seed_everything(seed, workers=True)
-    training_dataset, validation_dataset, test_dataset, test_cutoff = build_datasets(df, encoder_length=encoder_length)
+    training_dataset, validation_dataset, test_dataset, test_cutoff = build_datasets(
+        df, encoder_length=encoder_length, backtest_days=backtest_days
+    )
+    # [Remainder of train_tft function remains unchanged]
 
     train_dataloader = training_dataset.to_dataloader(train=True, batch_size=64, num_workers=0, pin_memory=False)
     val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=64, num_workers=0, pin_memory=False)
@@ -178,7 +178,7 @@ def run_optimization_and_train(master_file="master_df.csv", n_trials=12):
     print(f"[INIT] Loaded {master_file} with {len(df)} rows across tickers: {df['ticker'].unique()}")
 
     # Build datasets once for parameter exploration
-    training_dataset, validation_dataset, _, _ = build_datasets(df, encoder_length=21)
+    training_dataset, validation_dataset, _, _ = build_datasets(df, encoder_length=21, backtest_days=500, val_days=250)
     train_dataloader = training_dataset.to_dataloader(train=True, batch_size=64, num_workers=0)
     val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=64, num_workers=0)
 
