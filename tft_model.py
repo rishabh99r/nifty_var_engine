@@ -21,11 +21,14 @@ class EpochHeartbeat(pl.Callback):
 # In tft_model.py: Update the build_datasets function definition and default
 def build_datasets(df, encoder_length=21, backtest_days=500, val_days=250):
     """
-    Splits multi-series panel into:
-      - Test: Last 500 trading days
-      - Validation: 250 trading days immediately preceding the test window
-      - Training: All remaining historical observations (~2,000 days per ticker)
+    Builds training, validation, and testing TimeSeriesDataSets for the multi-series panel.
     """
+    # Defensive guards against None or boolean positional bleed
+    if backtest_days is None:
+        backtest_days = 500
+    if encoder_length is None or isinstance(encoder_length, bool):
+        encoder_length = 21
+
     df = df.copy()
     df['ticker'] = df['ticker'].astype(str)
 
@@ -73,12 +76,20 @@ def build_datasets(df, encoder_length=21, backtest_days=500, val_days=250):
 
 
 def train_tft(df, hidden_size=32, dropout=0.15, learning_rate=1e-3, seed=42,
-              max_epochs=80, encoder_length=21, backtest_days=500, enable_progress_bar=True, pruning_callback=None):
+              max_epochs=80, enable_progress_bar=True, pruning_callback=None,
+              encoder_length=21, backtest_days=500):
+    """
+    Trains TFT while maintaining full positional argument compatibility with hpo.py.
+    """
+    if backtest_days is None:
+        backtest_days = 500
+    if encoder_length is None or isinstance(encoder_length, bool):
+        encoder_length = 21
+
     pl.seed_everything(seed, workers=True)
     training_dataset, validation_dataset, test_dataset, test_cutoff = build_datasets(
         df, encoder_length=encoder_length, backtest_days=backtest_days
     )
-    # [Remainder of train_tft function remains unchanged]
 
     train_dataloader = training_dataset.to_dataloader(train=True, batch_size=64, num_workers=0, pin_memory=False)
     val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=64, num_workers=0, pin_memory=False)
@@ -91,14 +102,14 @@ def train_tft(df, hidden_size=32, dropout=0.15, learning_rate=1e-3, seed=42,
         attention_head_size=4,
         dropout=dropout,
         hidden_continuous_size=max(4, hidden_size // 2),
-        output_size=3,  # Quantiles: 0.01 (Downside VaR), 0.50 (Median), 0.99 (Upside VaR)
+        output_size=3,
         loss=QuantileLoss(quantiles=[0.01, 0.5, 0.99]),
         optimizer="adam",
         reduce_on_plateau_patience=4
     )
 
     callbacks = [
-        EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=10, verbose=False, mode="min"),
+        EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=8, verbose=False, mode="min"),
         EpochHeartbeat()
     ]
     if pruning_callback is not None:
@@ -119,7 +130,8 @@ def train_tft(df, hidden_size=32, dropout=0.15, learning_rate=1e-3, seed=42,
     val_loss = trainer.callback_metrics.get("val_loss")
     best_score = val_loss.item() if val_loss is not None else 0.0
 
-    return tft, trainer, best_score, test_dataloader, test_cutoff
+    # Return order matches hpo.py: (tft, trainer, score, val_dataloader, test_dataloader)
+    return tft, trainer, best_score, val_dataloader, test_dataloader
 
 
 def generate_and_save_predictions(tft, test_dataloader, df, output_csv="test_tft_predictions.csv"):
