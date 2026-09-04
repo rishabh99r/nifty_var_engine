@@ -167,18 +167,82 @@ def generate_and_save_predictions(tft, test_dataloader, df, output_csv="test_tft
     return merged
 
 
-if __name__ == "__main__":
-    master_file = "master_df.csv"
+import optuna
+from optuna.pruners import MedianPruner
+
+def run_optimization_and_train(master_file="master_df.csv", n_trials=12):
     if not os.path.exists(master_file):
         raise FileNotFoundError(f"Missing {master_file}. Run build_data.py first.")
 
     df = pd.read_csv(master_file)
     print(f"[INIT] Loaded {master_file} with {len(df)} rows across tickers: {df['ticker'].unique()}")
 
-    # Train TFT with baseline hyperparameters
-    tft, trainer, score, test_dataloader, test_cutoff = train_tft(
-        df, hidden_size=32, dropout=0.15, learning_rate=1e-3, seed=42, max_epochs=60
+    # Build datasets once for parameter exploration
+    training_dataset, validation_dataset, _, _ = build_datasets(df, encoder_length=21)
+    train_dataloader = training_dataset.to_dataloader(train=True, batch_size=64, num_workers=0)
+    val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=64, num_workers=0)
+
+    # ---------------------------------------------------------
+    # STAGE 1: RAPID HYPERPARAMETER SEARCH
+    # ---------------------------------------------------------
+    def objective(trial):
+        hidden_size = trial.suggest_categorical("hidden_size", [16, 32, 64])
+        dropout = trial.suggest_float("dropout", 0.10, 0.30, step=0.05)
+        learning_rate = trial.suggest_float("learning_rate", 5e-4, 5e-3, log=True)
+
+        tft = TemporalFusionTransformer.from_dataset(
+            training_dataset,
+            learning_rate=learning_rate,
+            hidden_size=hidden_size,
+            attention_head_size=4,
+            dropout=dropout,
+            hidden_continuous_size=max(4, hidden_size // 2),
+            output_size=3,
+            loss=QuantileLoss(quantiles=[0.01, 0.5, 0.99]),
+            optimizer="adam"
+        )
+
+        early_stop = EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=3, mode="min")
+        trainer = pl.Trainer(
+            max_epochs=20,
+            accelerator="auto",
+            devices="auto",
+            precision="16-mixed",
+            gradient_clip_val=0.1,
+            callbacks=[early_stop],
+            enable_progress_bar=False,
+            logger=False
+        )
+
+        trainer.fit(tft, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+        val_loss = trainer.callback_metrics.get("val_loss")
+        return val_loss.item() if val_loss is not None else float("inf")
+
+    print("\n[OPTUNA] Launching accelerated 12-trial sweep with Median Pruner...")
+    pruner = MedianPruner(n_startup_trials=3, n_warmup_steps=4)
+    study = optuna.create_study(direction="minimize", pruner=pruner)
+    study.optimize(objective, n_trials=n_trials)
+
+    print(f"\n[OPTUNA] Optimization complete! Best Val Loss: {study.best_value:.5f}")
+    print("[OPTUNA] Champion Parameters:", study.best_params)
+
+    # ---------------------------------------------------------
+    # STAGE 2: FULL RE-TRAIN OF THE CHAMPION MODEL
+    # ---------------------------------------------------------
+    print("\n[TRAIN] Fitting champion architecture to full convergence (max 80 epochs)...")
+    best = study.best_params
+    champion_tft, trainer, score, test_dataloader, _ = train_tft(
+        df,
+        hidden_size=best["hidden_size"],
+        dropout=best["dropout"],
+        learning_rate=best["learning_rate"],
+        max_epochs=80,
+        encoder_length=21,
+        seed=42
     )
 
-    # Export predictions with circuit breaker applied
-    generate_and_save_predictions(tft, test_dataloader, df)
+    # Export predictions with Stage 1 econometric circuit breaker
+    generate_and_save_predictions(champion_tft, test_dataloader, df)
+
+if __name__ == "__main__":
+    run_optimization_and_train(master_file="master_df.csv", n_trials=12)
