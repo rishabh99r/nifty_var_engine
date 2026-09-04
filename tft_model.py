@@ -18,24 +18,35 @@ class EpochHeartbeat(pl.Callback):
             print(f"    >>> [Heartbeat] Epoch {trainer.current_epoch:02d}/{trainer.max_epochs} | Val Loss: {val_loss:.4f}", flush=True)
 
 
-# In tft_model.py: Update the build_datasets function definition and default
 def build_datasets(df, encoder_length=21, backtest_days=500, val_days=250):
     """
     Builds training, validation, and testing TimeSeriesDataSets for the multi-series panel.
+    Guarantees unique DataFrame index to satisfy PyTorch Forecasting integrity checks.
     """
-    # Defensive guards against None or boolean positional bleed
+    # Defensive guards against None or positional parameter bleed
     if backtest_days is None:
         backtest_days = 500
     if encoder_length is None or isinstance(encoder_length, bool):
         encoder_length = 21
 
     df = df.copy()
+
+    # FIX: Ensure DataFrame index is strictly unique (RangeIndex)
+    if not df.index.is_unique or isinstance(df.index, pd.DatetimeIndex):
+        if 'Date' not in df.columns:
+            df = df.reset_index()
+        else:
+            df = df.reset_index(drop=True)
+    else:
+        df = df.reset_index(drop=True)
+
     df['ticker'] = df['ticker'].astype(str)
 
     max_idx = df["time_idx"].max()
     test_cutoff = max_idx - backtest_days
     val_cutoff = test_cutoff - val_days
 
+    # Discover known and unknown features dynamically
     candidate_known = ["time_idx", "GARCH_sigma", "US_VIX_Diff", "India_VIX_Diff", "FII_Net_Flow_Z"]
     known_reals = [col for col in candidate_known if col in df.columns]
 
@@ -45,7 +56,8 @@ def build_datasets(df, encoder_length=21, backtest_days=500, val_days=250):
     ]
     unknown_reals = [col for col in candidate_unknown if col in df.columns]
 
-    train_df = df[df["time_idx"] <= val_cutoff].copy()
+    # Explicitly enforce clean, unique indices on all subset splits
+    train_df = df[df["time_idx"] <= val_cutoff].reset_index(drop=True)
 
     training_dataset = TimeSeriesDataSet(
         train_df,
@@ -66,14 +78,13 @@ def build_datasets(df, encoder_length=21, backtest_days=500, val_days=250):
         allow_missing_timesteps=True
     )
 
-    val_df = df[(df["time_idx"] > val_cutoff - encoder_length) & (df["time_idx"] <= test_cutoff)].copy()
+    val_df = df[(df["time_idx"] > val_cutoff - encoder_length) & (df["time_idx"] <= test_cutoff)].reset_index(drop=True)
     validation_dataset = TimeSeriesDataSet.from_dataset(training_dataset, val_df, predict=False, stop_randomization=True)
 
-    test_df = df[df["time_idx"] > test_cutoff - encoder_length].copy()
+    test_df = df[df["time_idx"] > test_cutoff - encoder_length].reset_index(drop=True)
     test_dataset = TimeSeriesDataSet.from_dataset(training_dataset, test_df, predict=False, stop_randomization=True)
 
     return training_dataset, validation_dataset, test_dataset, test_cutoff
-
 
 def train_tft(df, hidden_size=32, dropout=0.15, learning_rate=1e-3, seed=42,
               max_epochs=80, enable_progress_bar=True, pruning_callback=None,
