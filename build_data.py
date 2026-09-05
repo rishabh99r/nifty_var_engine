@@ -104,22 +104,33 @@ def fetch_vix_pair():
 def build_macro_features(us_vix_close, india_vix_close, ticker_index):
     """
     Builds macro feature columns ALIGNED to the ticker trading calendar
-    (`ticker_index`). US VIX and India VIX are represented as NON-OVERLAPPING
-    daily log-differences (level shifted by one day so all features are
-    F_{t-1}-measurable at forecast time). Native-frequency levels are retained
-    for the Granger causality test.
+    (`ticker_index`).
+
+    CRITICAL anti-artifact rule: log-differences are computed on the NATIVE
+    VIX calendar (only genuinely observed days), then the resulting daily
+    changes are reindexed onto the ticker calendar with ffill. Differencing an
+    ffill()-ed LEVEL on the ticker calendar would create artificial zero
+    returns on any day where a VIX value was carried forward across a US or
+    India market closure -- deflating the variance of the feature and inflating
+    Granger-causality significance. We avoid that entirely here.
     """
-    us_reindexed = us_vix_close.reindex(ticker_index).ffill()
+    # Native-calendar daily log-changes (non-overlapping, no ffill zeros)
+    us_log_change = np.log(us_vix_close).diff().dropna()
+
+    # Reindex the CHANGES onto the ticker calendar (ffill of changes is safe:
+    # carry forward the last realized change, never invent a zero change).
     macro_df = pd.DataFrame(index=ticker_index)
-    macro_df["US_VIX"] = us_reindexed.shift(1)
-    macro_df["US_VIX_Diff"] = np.log(us_reindexed).diff().shift(1)
-    macro_df["US_VIX_Level"] = us_reindexed
+    macro_df["US_VIX"] = us_vix_close.reindex(ticker_index).ffill().shift(1)
+    macro_df["US_VIX_Diff"] = us_log_change.reindex(ticker_index).ffill().shift(1)
+    # Native level (ffilled onto the ticker calendar) is retained only as a
+    # reference/level feature for the model, NOT for differencing.
+    macro_df["US_VIX_Level"] = us_vix_close.reindex(ticker_index).ffill()
 
     if india_vix_close is not None:
-        in_reindexed = india_vix_close.reindex(ticker_index).ffill()
-        macro_df["India_VIX"] = in_reindexed.shift(1)
-        macro_df["India_VIX_Diff"] = np.log(in_reindexed).diff().shift(1)
-        macro_df["India_VIX_Level"] = in_reindexed
+        in_log_change = np.log(india_vix_close).diff().dropna()
+        macro_df["India_VIX"] = india_vix_close.reindex(ticker_index).ffill().shift(1)
+        macro_df["India_VIX_Diff"] = in_log_change.reindex(ticker_index).ffill().shift(1)
+        macro_df["India_VIX_Level"] = india_vix_close.reindex(ticker_index).ffill()
         macro_df["has_real_india_vix"] = True
     else:
         macro_df["has_real_india_vix"] = False

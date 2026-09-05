@@ -101,7 +101,12 @@ BASEL_YELLOW_CUM = 0.9999
 # EXPECTED SHORTFALL BACKTEST (McNeil-Frey)
 # ----------------------------------------------------------------------------
 ES_ALPHA = 0.01                     # 99% ES
-ES_MIN_BREACHES = 1                 # require >=1 exceedance to run ES test
+ES_MIN_BREACHES = 1                 # require >=1 exceedance to report descriptive ES
+# Minimum exceedances required to run a MEANINGFUL statistical test on ES.
+# Below this the t-stat/p-value are degenerate (tiny sample -> near-zero
+# variance -> absurd t-stats). With a 500-day backtest at alpha=1% the expected
+# exceedance count is ~5, so a threshold of 5 is the honest minimum.
+ES_MIN_BREACHES_TESTABLE = 5
 
 # ----------------------------------------------------------------------------
 # OUTPUT PATHS

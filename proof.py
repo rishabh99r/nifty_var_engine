@@ -18,6 +18,7 @@ from arch import arch_model
 from statsmodels.tsa.stattools import grangercausalitytests
 
 import config
+from metrics import extract_garch_dist_params, granger_series_from_panel
 
 warnings.filterwarnings("ignore")
 
@@ -44,32 +45,27 @@ def run_empirical_proofs(df_path="master_df.csv", max_lag=5):
         am = arch_model(returns, vol="Garch", p=1, o=1, q=1, dist="skewt")
         res = am.fit(disp="off")
 
-        nu = float(res.params.get("nu", np.nan))
-        lam = float(res.params.get("lambda", np.nan))
+        shape = extract_garch_dist_params(res)
+        nu = shape["nu"]
+        lam = shape["lambda"]
 
         print(f"\n--- Estimated Parameters: {sym} ---")
         print(f"  Omega (Baseline Variance):   {res.params['omega']:.6f}")
         print(f"  Alpha (Symmetric Shock):      {res.params['alpha[1]']:.6f}")
         print(f"  Gamma (Asymmetric Leverage):  {res.params['gamma[1]']:.6f}")
         print(f"  Beta (GARCH Persistence):      {res.params['beta[1]']:.6f}")
-        print(f"  Nu (Tail Degrees of Freedom): {nu:.4f}")
-        print(f"  Lambda (Skew Parameter):      {lam:.4f}")
+        print(f"  Nu (Tail Degrees of Freedom): {nu:.4f}" if not np.isnan(nu) else "  Nu (Tail df): N/A")
+        print(f"  Lambda (Skew Parameter):      {lam:.4f}" if not np.isnan(lam) else "  Lambda (Skew): N/A")
+        # Report the raw fitted parameter names so any naming surprise is visible
+        print(f"  [DEBUG] Fitted parameter names: {list(res.params.index)}")
 
     # 2. CROSS-BORDER GRANGER CAUSALITY on ACTUAL VIX log-differences
     print("\n[STEP 2] Executing Granger Causality (US VIX <-> India Volatility) on ACTUAL VIX log-diffs...")
     nifty = df[df["ticker"] == "NIFTY50"].sort_values(by="time_idx").copy()
 
-    # US VIX: use the actual level series -> daily log-difference (non-overlapping)
-    us_level = nifty["US_VIX_Level"].astype(float)
-    us_logdiff = np.log(us_level).diff()
-
-    # Domestic: prefer the REAL India VIX level if available; else the proxy
-    if "India_VIX_Level" in nifty.columns and nifty["India_VIX_Level"].notna().sum() > 50:
-        dom_logdiff = np.log(nifty["India_VIX_Level"].astype(float)).diff()
-        domestic_label = "Real India VIX (log-diff)"
-    else:
-        dom_logdiff = nifty["Domestic_RV_Proxy"].astype(float)
-        domestic_label = "Domestic_RV_Proxy (realized-vol proxy)"
+    # Build clean series from the *_Diff columns (computed on native VIX
+    # calendar in build_data.py -- never by differencing an ffill()-ed level).
+    us_logdiff, dom_logdiff, domestic_label = granger_series_from_panel(nifty)
 
     clean_df = pd.DataFrame({"us": us_logdiff, "dom": dom_logdiff}).dropna()
     lags = [1, 2, 3, 5]

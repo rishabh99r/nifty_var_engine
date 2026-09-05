@@ -24,6 +24,100 @@ def quantile_loss(y_true, y_pred, q=0.01):
     return pinball_loss(y_true, y_pred, q)
 
 
+# Aliases used by arch-family distributions for the tail degrees of freedom
+_DF_ALIASES = ("nu", "df", "v", "shape", "tail")
+_SKEW_ALIASES = ("lambda", "skew", "gamma")
+
+
+def granger_series_from_panel(sub):
+    """
+    Builds clean, non-artifactual (us, domestic) series for Granger causality
+    from one ticker's panel slice.
+
+    Uses the *_Diff columns which were computed on the NATIVE VIX calendar in
+    build_data.build_macro_features (never by differencing an ffill()-ed
+    level), so no artificial zero returns from market-calendar mismatches are
+    introduced. When the real India VIX is unavailable, the domestic series
+    falls back to the explicitly-labelled Domestic_RV_Proxy (lagged
+    first-difference of a 5-day realized-vol proxy) and the caller must
+    disclose that the "spillover" is relative to a proxy, not an options-
+    implied index.
+
+    Returns (us_series, dom_series, domestic_label).
+    """
+    us = sub["US_VIX_Diff"].astype(float)
+
+    if "India_VIX_Diff" in sub.columns and sub["India_VIX_Diff"].notna().sum() > 50:
+        dom = sub["India_VIX_Diff"].astype(float)
+        domestic_label = "Real India VIX (log-diff)"
+    else:
+        dom = sub["Domestic_RV_Proxy"].astype(float)
+        domestic_label = "Domestic_RV_Proxy (realized-vol proxy)"
+
+    return us, dom, domestic_label
+
+
+def extract_garch_dist_params(res):
+    """
+    Robustly extracts the shape parameters (tail df, skew) from a fitted arch
+    model RESULT by reading the distribution's OWN parameter names.
+
+    The arch package can name the skew-t degrees-of-freedom differently across
+    versions / mean specifications. This helper first does a KEYED lookup on the
+    fitted parameter names, then falls back to the distribution's declared
+    parameter-name order for the trailing shape parameters.
+
+    Returns {'nu': float-or-NaN, 'lambda': float-or-NaN}.
+    """
+    out = {"nu": np.nan, "lambda": np.nan}
+    if res is None:
+        return out
+
+    params = getattr(res, "params", None)
+    if params is None:
+        return out
+
+    try:
+        names = list(params.index)
+    except Exception:
+        names = []
+
+    # Strategy 1: keyed lookup on fitted parameter index
+    for alias in _DF_ALIASES + _SKEW_ALIASES:
+        if alias in names:
+            try:
+                val = float(params[alias])
+            except (TypeError, ValueError):
+                continue
+            if alias in _DF_ALIASES and np.isnan(out["nu"]):
+                out["nu"] = val
+            elif alias in _SKEW_ALIASES and np.isnan(out["lambda"]):
+                out["lambda"] = val
+
+    # Strategy 2: fall back to distribution-declared shape parameter order
+    if (np.isnan(out["nu"]) or np.isnan(out["lambda"])) and hasattr(res.model, "distribution"):
+        dist = res.model.distribution
+        try:
+            dist_names = list(getattr(dist, "name", [])) or []
+            dist_params = list(params)
+            k = len(dist_names)
+            if k > 0 and len(dist_params) >= k:
+                for dname, pval in zip(dist_names, dist_params[-k:]):
+                    try:
+                        pval = float(pval)
+                    except (TypeError, ValueError):
+                        continue
+                    dl = dname.lower()
+                    if dl in _DF_ALIASES and np.isnan(out["nu"]):
+                        out["nu"] = pval
+                    elif dl in _SKEW_ALIASES and np.isnan(out["lambda"]):
+                        out["lambda"] = pval
+        except Exception:
+            pass
+
+    return out
+
+
 def kupiec_pof_test(actual, var_pred, alpha=0.01):
     """Kupiec Unconditional Coverage (POF) Likelihood Ratio Test."""
     hits = (actual < var_pred).astype(int)
@@ -140,34 +234,38 @@ def diebold_mariano_test(y_true, y_pred1, y_pred2, q=0.01):
 
 def mcnell_frey_es_test(actual, var_pred, sigma, alpha=0.01, mu=0.0):
     """
-    McNeil-Frey Expected Shortfall backtest.
+    McNeil-Frey Expected Shortfall backtest (honest, disclosure-first).
 
     For every day where the realized return falls below the VaR forecast
     (an exceedance), standardize the exceedance by the forecast volatility:
         z_i = (r_i - mu) / sigma_i
-    Under a correctly-specified model, the mean of these standardized
-    exceedances should be consistent with the model's tail expectation. We
-    report the empirical mean tail loss (ES) and a one-sample t-test on the
-    standardized exceedances (H0: zero-mean), which detects whether the
-    model systematically under- or over-states tail severity beyond the VaR.
 
-    This gives the TFT a SECOND dimension (tail SHAPE) to demonstrate value
-    even when VaR breach counts are statistically indistinguishable.
-
-    Returns a dict with the ES estimate, the t-statistic and p-value, and the
-    number of exceedances used.
+    Reporting rules:
+      - DESCRIPTIVE ES (empirical mean tail loss and mean standardized
+        residual) is always reported when >= config.ES_MIN_BREACHES (>=1)
+        exceedances exist. The SIGN of es_mean_resid is informative: a large
+        negative value indicates the model UNDERSTATES tail severity on
+        breach days (the model fails hardest when it does fail).
+      - A one-sample t-test is computed ONLY when the exceedance count meets
+        config.ES_MIN_BREACHES_TESTABLE (default 5). With a 500-day backtest at
+        alpha=1% the expected exceedance count is ~5, so below this the
+        t-stat is degenerate (tiny sample -> near-zero variance -> absurd
+        t-stats such as -40 from 3 points) and MUST NOT be reported.
     """
     hits = actual < var_pred
     n_exceed = int(np.sum(hits))
 
+    empty = {
+        "n_exceed": n_exceed,
+        "es_empirical": np.nan,
+        "es_t_stat": np.nan,
+        "es_p_value": np.nan,
+        "es_mean_resid": np.nan,
+        "es_testable": False,
+    }
+
     if n_exceed < config.ES_MIN_BREACHES:
-        return {
-            "n_exceed": n_exceed,
-            "es_empirical": np.nan,
-            "es_t_stat": np.nan,
-            "es_p_value": np.nan,
-            "es_mean_resid": np.nan,
-        }
+        return empty
 
     sigma_vals = np.asarray(sigma)[hits]
     actual_vals = np.asarray(actual)[hits]
@@ -180,24 +278,25 @@ def mcnell_frey_es_test(actual, var_pred, sigma, alpha=0.01, mu=0.0):
         z = (actual_vals - mu) / sigma_vals
     z = z[np.isfinite(z)]
 
-    if len(z) < 2:
-        return {
-            "n_exceed": n_exceed,
-            "es_empirical": es_empirical,
-            "es_t_stat": np.nan,
-            "es_p_value": np.nan,
-            "es_mean_resid": np.nan,
-        }
+    if len(z) == 0:
+        return empty
 
-    # One-sample t-test on standardized exceedances (H0: mean == 0)
-    t_stat, p_val = stats.ttest_1samp(z, 0.0)
+    es_mean_resid = float(np.mean(z))
+    testable = len(z) >= config.ES_MIN_BREACHES_TESTABLE
+
+    # Only run the t-test when the sample is statistically meaningful.
+    if testable and len(z) >= 2:
+        t_stat, p_val = stats.ttest_1samp(z, 0.0)
+    else:
+        t_stat, p_val = np.nan, np.nan
 
     return {
         "n_exceed": n_exceed,
         "es_empirical": es_empirical,
         "es_t_stat": float(t_stat),
         "es_p_value": float(p_val),
-        "es_mean_resid": float(np.mean(z)),
+        "es_mean_resid": es_mean_resid,
+        "es_testable": bool(testable),
     }
 
 
@@ -276,7 +375,7 @@ def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, garch_sigma=No
         es = mcnell_frey_es_test(actual, tft_var, garch_sigma, alpha=alpha)
     else:
         es = {"n_exceed": np.nan, "es_empirical": np.nan, "es_t_stat": np.nan,
-              "es_p_value": np.nan, "es_mean_resid": np.nan}
+              "es_p_value": np.nan, "es_mean_resid": np.nan, "es_testable": False}
 
     return {
         "breaches": kupiec["N"],
@@ -301,6 +400,7 @@ def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, garch_sigma=No
         "es_t_stat": es["es_t_stat"],
         "es_p_value": es["es_p_value"],
         "es_mean_resid": es["es_mean_resid"],
+        "es_testable": es["es_testable"],
     }
 
 

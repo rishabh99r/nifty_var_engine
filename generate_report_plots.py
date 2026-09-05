@@ -22,7 +22,7 @@ from arch import arch_model
 from statsmodels.tsa.stattools import grangercausalitytests
 
 import config
-from metrics import calculate_metrics, evaluate_panel_metrics
+from metrics import calculate_metrics, evaluate_panel_metrics, extract_garch_dist_params, granger_series_from_panel
 
 warnings.filterwarnings("ignore")
 plt.style.use("seaborn-v0_8-whitegrid")
@@ -130,9 +130,10 @@ def plot_all_news_impact_curves(master_df):
         alpha = res.params["alpha[1]"]
         gamma = res.params["gamma[1]"]
         beta = res.params["beta[1]"]
-        # KEYED-BY-NAME extraction (never positional) so df is meaningful
-        nu = float(res.params.get("nu", np.nan))
-        lam = float(res.params.get("lambda", np.nan))
+        # ROBUST shape-parameter extraction (handles arch naming variations)
+        shape = extract_garch_dist_params(res)
+        nu = shape["nu"]
+        lam = shape["lambda"]
         uncond_vol = np.sqrt(np.asarray(res.conditional_volatility)[-1] ** 2)
         shocks = np.linspace(-6, 6, 500)
 
@@ -157,10 +158,10 @@ def plot_all_news_impact_curves(master_df):
 
 
 # =====================================================================
-# 3. GRANGER CAUSALITY on ACTUAL VIX LOG-DIFFERENCES (no overlapping windows)
+# 3. GRANGER CAUSALITY on DAILY LOG-DIFFERENCES (native VIX calendar)
 # =====================================================================
 def plot_all_granger_spillover(master_df):
-    print("[PLOT 3/6] Generating Granger Causality Profiles (ACTUAL VIX log-diffs)...")
+    print("[PLOT 3/6] Generating Granger Causality Profiles (native-calendar log-diffs)...")
     fig, axes = plt.subplots(1, 3, figsize=(18, 4.8), dpi=300, sharey=True)
     lags = [1, 2, 3, 5]
     granger_results = {}
@@ -169,17 +170,9 @@ def plot_all_granger_spillover(master_df):
         ax = axes[i]
         sub = master_df[master_df["ticker"] == sym].copy()
 
-        # Use ACTUAL US VIX level series (non-overlapping)
-        us_level = sub["US_VIX_Level"].astype(float)
-        us_logdiff = np.log(us_level).diff()
-
-        # Domestic volatility: prefer REAL India VIX level if present,
-        # otherwise the realized-vol proxy.
-        if "India_VIX_Level" in sub.columns and sub["India_VIX_Level"].notna().sum() > 50:
-            in_level = sub["India_VIX_Level"].astype(float)
-            in_logdiff = np.log(in_level).diff()
-        else:
-            in_logdiff = sub["Domestic_RV_Proxy"].astype(float)
+        # Use the *_Diff columns (native VIX calendar log-changes from
+        # build_data.py) so no ffill-differencing artifacts appear.
+        us_logdiff, in_logdiff, domestic_label = granger_series_from_panel(sub)
 
         clean_df = pd.DataFrame({"us": us_logdiff, "dom": in_logdiff}).dropna()
 
@@ -190,7 +183,7 @@ def plot_all_granger_spillover(master_df):
 
         p_fwd = [res_fwd[l][0]["ssr_chi2test"][1] for l in lags]
         p_rev = [res_rev[l][0]["ssr_chi2test"][1] for l in lags]
-        granger_results[sym] = {"p_forward": p_fwd, "p_reverse": p_rev}
+        granger_results[sym] = {"p_forward": p_fwd, "p_reverse": p_rev, "domestic_label": domestic_label}
 
         x = np.arange(len(lags))
         width = 0.35
@@ -198,7 +191,7 @@ def plot_all_granger_spillover(master_df):
         ax.bar(x + width / 2, -np.log10(p_rev), width, label="Domestic Vol $\\rightarrow$ US VIX", color="#27ae60")
         ax.axhline(-np.log10(0.05), color="#c0392b", linestyle="--", linewidth=1.5, label="Significance ($\\alpha=0.05$)")
 
-        ax.set_title(f"{sym} Cross-Border Spillover (Actual VIX log-diffs)", fontweight="bold")
+        ax.set_title(f"{sym} Cross-Border Spillover (Daily log-diffs)", fontweight="bold")
         ax.set_xticks(x)
         ax.set_xticklabels([f"{l}D Lag" for l in lags])
         ax.set_xlabel("Lag Horizon")
@@ -335,6 +328,9 @@ def export_complete_test_suite(panel_df, garch_params, granger_params, master_df
             "Diebold-Mariano Stat": round(m["dm_stat"], 4),
             "DM p-value": round(m["dm_p_value"], 4),
             "Mean Loss Diff": round(m["mean_loss_diff"], 6),
+            "ES n (breaches)": m["es_n_exceed"],
+            "ES mean resid (z)": round(m["es_mean_resid"], 4) if not np.isnan(m["es_mean_resid"]) else "N/A",
+            "ES testable (n>=5)": "YES" if m["es_testable"] else "NO",
             "ES t-stat": round(m["es_t_stat"], 4) if not np.isnan(m["es_t_stat"]) else "N/A",
             "ES p-value": round(m["es_p_value"], 4) if not np.isnan(m["es_p_value"]) else "N/A",
         })
@@ -356,6 +352,11 @@ def export_complete_test_suite(panel_df, garch_params, granger_params, master_df
         f.write("NOTE: This table reports the MEDIAN-performing seed for transparent\n")
         f.write("disclosure. Across-seed Mean +/- Std is reported below.\n\n")
         f.write(audit_table.to_string(index=False))
+        f.write("\n\nES METHODOLOGY NOTE: 'ES testable (n>=5)' indicates whether the\n")
+        f.write("exceedance count is large enough for a meaningful McNeil-Frey t-test.\n")
+        f.write("Below n=5 the ES t-stat/p-value are DEGENERATE and are suppressed.\n")
+        f.write("'ES mean resid (z)' is the mean standardized exceedance; a strongly\n")
+        f.write("negative value signals tail understatement on breach days.\n")
         f.write("\n\n" + "-" * 80 + "\n")
         f.write("SYSTEMIC RISK & MULTIVARIATE CO-BREACH EVALUATION:\n")
         f.write(f"  - Panel Size:                     {cb['panel_size']} Indices\n")
@@ -363,13 +364,17 @@ def export_complete_test_suite(panel_df, garch_params, granger_params, master_df
         f.write(f"  - Expected Independent Hits:      {cb['expected_co_breaches']:.4f}\n")
         f.write(f"  - Poisson Tail Independence p-val:{cb['poisson_p_value']:.4f}\n")
         f.write("-" * 80 + "\n\n")
-        f.write("GJR-GARCH(1,1) SKEW-T ESTIMATED PARAMETERS (keyed-by-name extraction):\n")
+        f.write("GJR-GARCH(1,1) SKEW-T ESTIMATED PARAMETERS (robust shape extraction):\n")
         for sym, p in garch_params.items():
+            nu_str = f"{p['nu']:.2f}" if not np.isnan(p["nu"]) else "N/A"
+            lam_str = f"{p['lambda']:.3f}" if not np.isnan(p["lambda"]) else "N/A"
             f.write(f"  [{sym}] Omega={p['omega']:.5f}, Alpha={p['alpha']:.5f}, Gamma={p['gamma']:.5f}, "
-                    f"Beta={p['beta']:.5f}, df(nu)={p['nu']:.2f}, lambda={p['lambda']:.3f}\n")
-        f.write("\nCROSS-BORDER CAUSALITY (ACTUAL VIX LOG-DIFFS, no overlapping windows):\n")
+                    f"Beta={p['beta']:.5f}, df(nu)={nu_str}, lambda={lam_str}\n")
+        f.write("\nCROSS-BORDER CAUSALITY (DAILY LOG-DIFFS on native VIX calendar):\n")
         for sym, g in granger_params.items():
-            f.write(f"  [{sym}] 1D Lag p={g['p_forward'][0]:.4f} | 2D Lag p={g['p_forward'][1]:.4f} | 5D Lag p={g['p_forward'][3]:.4f}\n")
+            dom_label = g.get("domestic_label", "")
+            f.write(f"  [{sym}] 1D Lag p={g['p_forward'][0]:.4f} | 2D Lag p={g['p_forward'][1]:.4f} | 5D Lag p={g['p_forward'][3]:.4f}"
+                    f"   (domestic: {dom_label})\n")
         f.write("-" * 80 + "\n\n")
 
         # Across-seed aggregation (if the multi-seed report exists)

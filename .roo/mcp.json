@@ -1,0 +1,14 @@
+{
+	"mcpServers": {
+		"exa": {
+			"command": "/home/rishabh/.yarn/bin/exa-mcp-server",
+			"env": {
+				"EXA_API_KEY": "972d90cb-a282-462d-ae63-7f0cb8b58606"
+			},
+			"alwaysAllow": [
+				"web_search_exa",
+				"web_fetch_exa"
+			]
+		}
+	}
+}
