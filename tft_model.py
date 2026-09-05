@@ -143,7 +143,7 @@ def train_tft(df, hidden_size=64, dropout=0.30, learning_rate=0.001552, seed=42,
     if pruning_callback is not None:
         callbacks.append(pruning_callback)
 
-    precision_mode = "16-mixed" if torch.cuda.is_available() else "32-true"
+    precision_mode = "32-true"
 
     trainer = pl.Trainer(
         max_epochs=max_epochs,
