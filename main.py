@@ -1,82 +1,98 @@
-import pandas as pd
-import numpy as np
+# main.py
 import os
-from hpo import optimize_hyperparameters
-from tft_model import train_tft
-from metrics import calculate_metrics
-from config import VALIDATION_SEEDS, set_seed
+import shutil
+import warnings
+import numpy as np
+import pandas as pd
+from tft_model import train_tft, generate_and_save_predictions
+from metrics import calculate_metrics, evaluate_panel_metrics
 
-def generate_predictions(tft, test_dataloader, df):
-    print("[INFERENCE] Extracting out-of-sample predictions on TEST set...")
-    prediction_output = tft.predict(test_dataloader, mode="quantiles", return_index=True)
+warnings.filterwarnings("ignore")
 
-    raw_predictions = prediction_output[0]
-    index = None
-    for item in prediction_output[1:]:
-        if isinstance(item, pd.DataFrame):
-            index = item
-            break
+DRIVE_DIR = "/content/drive/MyDrive/GARCH_TFT_Results"
 
-    tft_var_99 = raw_predictions[:, 0, 0].numpy()
-    time_indices = index["time_idx"].values
+# Discovered Champion Configuration
+CHAMPION_PARAMS = {
+    'hidden_size': 64,
+    'dropout': 0.30,
+    'learning_rate': 0.001552
+}
 
-    results_df = pd.DataFrame({
-        "time_idx": time_indices,
-        "TFT_VaR_99": tft_var_99
-    })
+# 3-Seed Validation Suite
+VALIDATION_SEEDS = [42, 123, 777]
 
-    merged_df = results_df.merge(df[['time_idx', 'Log_Ret', 'GARCH_VaR_99']], on="time_idx", how="inner")
-    merged_df.rename(columns={"Log_Ret": "Actual"}, inplace=True)
-    results_df.to_csv("test_tft_predictions.csv", index=True)
-    return merged_df
 
 def main():
-    print("===== INITIALIZING NIFTY 50 RISK ENGINE (FAST TRAINING PIPELINE) =====")
+    print("===== INITIALIZING NIFTY PANEL RISK ENGINE (FAST-TRACK EXECUTION) =====")
     csv_path = "master_df.csv"
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"[ERROR] {csv_path} not found! Run 'python build_data.py' first.")
 
-    master_df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-    print(f"[LOAD] Dataset successfully loaded ({len(master_df)} trading days).")
+    # Load master panel cleanly without coercing arbitrary index columns
+    master_df = pd.read_csv(csv_path)
+    print(f"[LOAD] Multi-series dataset loaded ({len(master_df)} rows across tickers: {master_df['ticker'].unique()}).")
 
-    print("\n=== PHASE 1: HYPERPARAMETER OPTIMIZATION (VALIDATION SET) ===")
-    best_params = optimize_hyperparameters(master_df, n_trials=30)
+    print(f"\n=== PHASE 1: DIRECT CHAMPION ARCHITECTURE TRAINING ===")
+    print(f"Target Configuration: {CHAMPION_PARAMS}")
 
-    print("\n=== PHASE 2: 5-SEED ROBUSTNESS AUDIT (TEST SET) ===")
-    all_metrics = []
+    all_seed_results = []
 
     for seed in VALIDATION_SEEDS:
-        print(f"\n[AUDIT] Launching Network with Seed: {seed}")
-        set_seed(seed)
+        print(f"\n{'-'*60}")
+        print(f"[RUN] Training Panel TFT with Seed {seed}...")
+        print(f"{'-'*60}")
 
-        tft, trainer, val_loss, _, test_dataloader = train_tft(
+        tft, trainer, best_score, val_dataloader, test_dataloader = train_tft(
             df=master_df,
-            hidden_size=best_params['hidden_size'],
-            dropout=best_params['dropout'],
-            learning_rate=best_params['learning_rate'],
+            hidden_size=CHAMPION_PARAMS['hidden_size'],
+            dropout=CHAMPION_PARAMS['dropout'],
+            learning_rate=CHAMPION_PARAMS['learning_rate'],
             seed=seed,
-            max_epochs=100,
-            enable_progress_bar=True,
-            pruning_callback=None
+            max_epochs=80,
+            encoder_length=21,
+            backtest_days=500,
+            enable_progress_bar=True
         )
 
-        results_df = generate_predictions(tft, test_dataloader, master_df)
-        seed_metrics = calculate_metrics(results_df)
+        print(f"\n[INFERENCE] Generating out-of-sample test predictions for Seed {seed}...")
+        nifty_preds = generate_and_save_predictions(
+            tft, test_dataloader, master_df,
+            output_csv=f"test_tft_predictions_seed_{seed}.csv",
+            panel_csv=f"test_tft_predictions_panel_seed_{seed}.csv"
+        )
 
-        print(f"\n[AUDIT] Seed {seed} Results:")
-        print(f"  -> Test Days:     {len(results_df)}")
-        print(f"  -> TFT Failures:  {seed_metrics['tft_failures']} (Limit: {seed_metrics['basel_limit']})")
-        print(f"  -> Kupiec p-val:  {seed_metrics['kupiec_p_value']:.4f}")
-        print(f"  -> DM Statistic:  {seed_metrics['dm_statistic']:.4f} (p-val: {seed_metrics['dm_p_value']:.4f})")
+        # Retain canonical file pointers for downstream report scripts
+        shutil.copy(f"test_tft_predictions_seed_{seed}.csv", "test_tft_predictions.csv")
+        shutil.copy(f"test_tft_predictions_panel_seed_{seed}.csv", "test_tft_predictions_panel.csv")
 
-        all_metrics.append(seed_metrics)
+        # Evaluate NIFTY 50 baseline
+        nifty_metrics = calculate_metrics(nifty_preds)
 
-    print("\n=== PIPELINE EXECUTION COMPLETE ===")
-    avg_dm_pval = np.mean([m['dm_p_value'] for m in all_metrics])
-    avg_failures = np.mean([m['tft_failures'] for m in all_metrics])
-    print(f"Final Architecture: {best_params}")
-    print(f"Average TFT Failures across 5 seeds: {avg_failures}")
-    print(f"Average Diebold-Mariano p-value: {avg_dm_pval:.4f}")
+        print(f"\n[AUDIT] Seed {seed} (NIFTY 50 Results):")
+        print(f"  -> Out-of-Sample Days:  {nifty_metrics['total_obs']}")
+        print(f"  -> 99% VaR Breaches:    {nifty_metrics['breaches']} (Basel {nifty_metrics['basel_zone']} Zone, Green Limit: <= {nifty_metrics['basel_limit']})")
+        print(f"  -> Kupiec POF p-value:  {nifty_metrics['kupiec_p_value']:.4f}")
+        print(f"  -> Christoffersen Ind:  {nifty_metrics['christ_p_value']:.4f}")
+        print(f"  -> Diebold-Mariano Stat: {nifty_metrics['dm_stat']:.4f} (p-value: {nifty_metrics['dm_p_value']:.4f})")
+
+        all_seed_results.append(nifty_metrics)
+
+    # Persist predictions and summaries to Google Drive
+    if os.path.exists("/content/drive/MyDrive"):
+        os.makedirs(DRIVE_DIR, exist_ok=True)
+        shutil.copy("test_tft_predictions.csv", os.path.join(DRIVE_DIR, "test_tft_predictions.csv"))
+        shutil.copy("test_tft_predictions_panel.csv", os.path.join(DRIVE_DIR, "test_tft_predictions_panel.csv"))
+        print(f"\n[PERSISTENCE] Prediction artifacts backed up to {DRIVE_DIR}")
+
+    print("\n=================== MULTI-SEED AUDIT SUMMARY ===================")
+    avg_breaches = np.mean([m['breaches'] for m in all_seed_results])
+    avg_dm_stat = np.mean([m['dm_stat'] for m in all_seed_results])
+    avg_dm_pval = np.mean([m['dm_p_value'] for m in all_seed_results])
+    print(f"Seeds Evaluated:               {VALIDATION_SEEDS}")
+    print(f"Average NIFTY 50 Breaches:     {avg_breaches:.1f} / 500 days")
+    print(f"Average Diebold-Mariano Stat:  {avg_dm_stat:.4f} (p-val: {avg_dm_pval:.4f})")
+    print("================================================================")
+
 
 if __name__ == "__main__":
     main()

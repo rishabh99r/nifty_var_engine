@@ -9,31 +9,27 @@ from arch import arch_model
 
 warnings.filterwarnings("ignore")
 
+LOOKBACK_DAYS = 1000
+REFIT_FREQ = 21  # Monthly parameter re-estimation
+
 
 def compute_garman_klass(df):
     """
     Computes Garman-Klass historical volatility proxy from daily OHLC prices.
     Requires columns: 'Open', 'High', 'Low', 'Close'.
-    Up to 8x more statistically efficient than close-to-close squared returns.
     """
     df = df[(df['High'] > 0) & (df['Low'] > 0) & (df['Open'] > 0) & (df['Close'] > 0)].copy()
 
     log_hl = np.log(df['High'] / df['Low'])
     log_co = np.log(df['Close'] / df['Open'])
 
-    # Garman-Klass Variance Formula
     df['GK_Variance'] = 0.5 * (log_hl ** 2) - (2 * np.log(2) - 1) * (log_co ** 2)
-
-    # Convert to annualized percentage standard deviation
     df['GK_Vol'] = np.sqrt(np.maximum(df['GK_Variance'], 1e-8) * 252) * 100
     return df
 
 
 def purge_stale_artifacts():
-    """
-    Scans the runtime directory and aggressively wipes out stale data cache,
-    temporary validation checkpoints, and incomplete model optimization tracking databases.
-    """
+    """Wipes out stale data cache, validation checkpoints, and tracking files."""
     print("\n=== SYSTEM SANITIZATION: PURGING STALE ARTIFACTS ===")
 
     stale_files = [
@@ -51,7 +47,6 @@ def purge_stale_artifacts():
             except Exception as e:
                 print(f"  [WARNING] Could not purge {file}: {str(e)}")
 
-    # Wipe out residual PyTorch Lightning checkpoints from aborted training sessions
     stale_checkpoints = glob.glob("lightning_logs/*/checkpoints/*.ckpt")
     for ckpt in stale_checkpoints:
         try:
@@ -70,41 +65,80 @@ def clean_yf_columns(raw_df):
     return raw_df.copy()
 
 
-def fit_gjr_garch_per_series(returns_series):
+def rolling_gjr_garch_pit(returns_series, lookback=LOOKBACK_DAYS, refit_freq=REFIT_FREQ):
     """
-    Fits Skew-T GJR-GARCH(1,1) model on log returns to extract conditional volatility,
-    scale-free standardized innovations (z_t), and the parametric 99% VaR floor.
+    Point-in-Time Rolling Skew-T GJR-GARCH(1,1) filter.
+    Parameters re-estimated every `refit_freq` steps over historical slice [t-lookback : t-1].
+    Conditional variance sigma_t and VaR_99 are strictly F_{t-1}-measurable.
     """
-    am = arch_model(returns_series, mean='Constant', vol='Garch', p=1, o=1, q=1, dist='skewt')
-    res = am.fit(disp='off')
+    T = len(returns_series)
+    vol_arr = np.full(T, np.nan)
+    resid_arr = np.full(T, np.nan)
+    var99_arr = np.full(T, np.nan)
 
-    vol = res.conditional_volatility
-    resid = res.std_resid  # z_t = (r_t - mu) / sigma_t (standardized innovation)
+    current_res = None
+    last_params = {}
+    last_q_dist = -2.326
 
-    # Parametric 99% quantile boundary (Student-t inverse CDF)
-    q_dist = res.model.distribution.ppf(0.01, res.params[-2:])
-    mu = res.params.get('mu', 0.0)
-    var_99 = mu + vol * q_dist
+    print(f"  -> Running PIT rolling GJR-GARCH across {T} periods (warm-up: {lookback} days)...")
 
-    return vol, resid, var_99
+    for t in range(lookback, T):
+        # 1. Periodic Parameter Re-estimation
+        if (t - lookback) % refit_freq == 0 or current_res is None:
+            train_slice = returns_series.iloc[t - lookback : t]
+            am = arch_model(train_slice, mean='Constant', vol='Garch', p=1, o=1, q=1, dist='skewt')
+            try:
+                current_res = am.fit(disp='off', show_warning=False)
+                last_params = {
+                    'mu': current_res.params.get('mu', 0.0),
+                    'omega': current_res.params['omega'],
+                    'alpha': current_res.params['alpha[1]'],
+                    'gamma': current_res.params['gamma[1]'],
+                    'beta': current_res.params['beta[1]']
+                }
+                # Parametric 99% quantile boundary (Skew-T inverse CDF)
+                last_q_dist = current_res.model.distribution.ppf(0.01, current_res.params[-2:])
+            except Exception:
+                # Retain previous parameters if numerical MLE fails
+                pass
+
+        # 2. Daily Variance Recursion at t using shock from t-1
+        prev_r = returns_series.iloc[t - 1]
+        prev_vol = vol_arr[t - 1] if not np.isnan(vol_arr[t - 1]) else current_res.conditional_volatility.iloc[-1]
+
+        eps_prev = prev_r - last_params['mu']
+        leverage_ind = 1.0 if eps_prev < 0.0 else 0.0
+
+        sigma2_t = (
+            last_params['omega']
+            + (last_params['alpha'] + last_params['gamma'] * leverage_ind) * (eps_prev ** 2)
+            + last_params['beta'] * (prev_vol ** 2)
+        )
+        sigma_t = np.sqrt(max(sigma2_t, 1e-6))
+
+        vol_arr[t] = sigma_t
+        resid_arr[t] = (returns_series.iloc[t] - last_params['mu']) / sigma_t
+        var99_arr[t] = last_params['mu'] + sigma_t * last_q_dist
+
+    return pd.Series(vol_arr, index=returns_series.index), \
+           pd.Series(resid_arr, index=returns_series.index), \
+           pd.Series(var99_arr, index=returns_series.index)
 
 
 def generate_clean_production_data():
-    # 1. Trigger the isolation purge
     purge_stale_artifacts()
 
     print("[ETL] Fetching historical index panel and cross-border volatility...")
     start_date = "2015-01-01"
     end_date = "2026-08-01"
 
-    # Define the domestic multi-series panel tickers
     tickers = {
         'NIFTY50': '^NSEI',
         'BANKNIFTY': '^NSEBANK',
         'NIFTYIT': '^CNXIT'
     }
 
-    # 2. Download and prepare exogenous macro volatility (US VIX)
+    # 1. Macro exogenous feature alignment (strictly lagged to t-1)
     raw_vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)
     if raw_vix.empty:
         raise ValueError("[FATAL] Yahoo Finance API failure: Unable to download ^VIX.")
@@ -112,14 +146,13 @@ def generate_clean_production_data():
     raw_vix = clean_yf_columns(raw_vix)
     vix_close = raw_vix['Close'].dropna()
 
-    # Strict Point-in-Time (PIT) lag enforcement: shift by 1 to prevent lookahead bias
     macro_df = pd.DataFrame(index=vix_close.index)
     macro_df['US_VIX'] = vix_close.shift(1)
     macro_df['US_VIX_Diff'] = vix_close.diff().shift(1)
-    macro_df['VIX_Diff'] = macro_df['US_VIX_Diff']  # Dual-alias for backward compatibility
+    macro_df['VIX_Diff'] = macro_df['US_VIX_Diff']
     macro_df = macro_df.dropna()
 
-    # 3. Process each ticker in the multi-series panel
+    # 2. Process domestic index panel
     ticker_dfs = []
 
     for label, symbol in tickers.items():
@@ -131,35 +164,33 @@ def generate_clean_production_data():
         raw_ticker = clean_yf_columns(raw_ticker)
         df = raw_ticker[['Open', 'High', 'Low', 'Close', 'Volume']].dropna().copy()
 
-        # Compute percentage log returns
         df['Log_Ret'] = 100 * np.log(df['Close'] / df['Close'].shift(1))
         df = df.dropna()
 
-        # Compute Garman-Klass range-based volatility proxy
         df = compute_garman_klass(df)
 
-        # Fit Stage 1 Skew-T GJR-GARCH filter
-        vol, resid, var_99 = fit_gjr_garch_per_series(df['Log_Ret'])
+        # Apply Point-in-Time rolling GJR-GARCH
+        vol, resid, var_99 = rolling_gjr_garch_pit(df['Log_Ret'], lookback=LOOKBACK_DAYS, refit_freq=REFIT_FREQ)
+
+        # Preserve all exact schema aliases expected by downstream modules
         df['GARCH_Vol'] = vol
-        df['GARCH_sigma'] = vol       # Dual-alias for TFT known_reals
+        df['GARCH_sigma'] = vol
         df['GARCH_Resid'] = resid
-        df['GARCH_resid'] = resid     # Dual-alias for TFT unknown_reals
+        df['GARCH_resid'] = resid
         df['GARCH_VaR_99'] = var_99
 
-        # Lag features (PIT-safe, observable at t-1)
         df['Log_Ret_Lag1'] = df['Log_Ret'].shift(1)
         df['Log_Ret_Lag2'] = df['Log_Ret'].shift(2)
         df['India_VIX_Diff'] = df['Log_Ret'].rolling(5).std().diff().shift(1)
 
-        # Join cross-border macro features
         df = df.join(macro_df, how='inner')
-        df = df.dropna()
+        df = df.dropna()  # Purges the initial 1000-day warm-up period cleanly
 
         df['ticker'] = label
         df['Date'] = df.index.strftime('%Y-%m-%d')
         ticker_dfs.append(df)
 
-    # 4. Synchronize trading dates across all panel tickers
+    # 3. Synchronize trading dates across all panel tickers
     common_dates = sorted(list(set(ticker_dfs[0]['Date']).intersection(*[set(d['Date']) for d in ticker_dfs[1:]])))
     date_to_time_idx = {d: i for i, d in enumerate(common_dates)}
 
@@ -169,7 +200,6 @@ def generate_clean_production_data():
         df_aligned['time_idx'] = df_aligned['Date'].map(date_to_time_idx)
         aligned_dfs.append(df_aligned)
 
-    # 5. Concatenate and sort panel long matrix
     master_df = pd.concat(aligned_dfs, ignore_index=True)
     master_df = master_df.sort_values(by=['time_idx', 'ticker']).reset_index(drop=True)
 
