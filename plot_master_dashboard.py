@@ -5,11 +5,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 
+import config
+
 warnings.filterwarnings("ignore")
 plt.style.use('seaborn-v0_8-whitegrid')
 plt.rcParams.update({'font.family': 'serif', 'font.size': 10})
 
-OUTPUT_DIR = '/content/drive/MyDrive/GARCH_TFT_Results/'
+OUTPUT_DIR = config.OUTPUT_DIR + "/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def plot_distribution_fit(df_path="master_df.csv"):
@@ -80,10 +82,10 @@ def plot_risk_river(pred_path="test_tft_predictions.csv", master_path="master_df
 
     fig, ax = plt.subplots(figsize=(10.5, 5), dpi=300)
     ax.plot(df.index, df['Actual'], color='#2c3e50', linewidth=1.1, label='Actual Nifty Return', alpha=0.75)
-    ax.plot(df.index, df['TFT_VaR_99'], color='#e74c3c', linewidth=2.0, label='Hybrid TFT 99% VaR Limit')
-    ax.plot(df.index, df['GARCH_VaR_99'], color='#f39c12', linestyle='--', linewidth=1.5, label='GJR-GARCH 99% VaR Floor')
+    ax.plot(df.index, df['TFT_VaR_99'], color='#e74c3c', linewidth=2.0, label='ECTFT 99% VaR')
+    ax.plot(df.index, df['GARCH_VaR_99'], color='#f39c12', linestyle='--', linewidth=1.5, label='GJR-GARCH 99% VaR (reference)')
 
-    ax.fill_between(df.index, df['TFT_VaR_99'], df['GARCH_VaR_99'], color='#e74c3c', alpha=0.15, label='Neural Adaptation Band')
+    ax.fill_between(df.index, df['TFT_VaR_99'], df['GARCH_VaR_99'], color='#e74c3c', alpha=0.15, label='Model Gap (TFT vs GARCH reference)')
 
     breaches = df[df['Actual'] < df['TFT_VaR_99']]
     ax.scatter(breaches.index, breaches['Actual'], color='#c0392b', marker='x', s=55, zorder=6, label=f'VaR Exceptions (n={len(breaches)})')

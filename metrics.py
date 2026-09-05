@@ -1,8 +1,16 @@
 # metrics.py
+# =============================================================================
+# Statistical backtesting and validation metrics for the VaR pipeline.
+# Includes standard VaR backtests (Kupiec, Christoffersen, LR-CC, Engle-
+# Manganelli DQ, Basel traffic light, Diebold-Mariano) plus a McNeil-Frey
+# Expected Shortfall backtest, and helpers to aggregate metrics across
+# multiple random seeds (Mean +/- Std) for honest statistical reporting.
+# =============================================================================
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
-import statsmodels.api as sm
+
+import config
 
 
 def pinball_loss(y_true, y_pred, q=0.01):
@@ -11,11 +19,13 @@ def pinball_loss(y_true, y_pred, q=0.01):
     return np.where(diff < 0, (1.0 - q) * (-diff), q * diff)
 
 
+def quantile_loss(y_true, y_pred, q=0.01):
+    """Alias kept for backward compatibility with HPO scripts."""
+    return pinball_loss(y_true, y_pred, q)
+
+
 def kupiec_pof_test(actual, var_pred, alpha=0.01):
-    """
-    Kupiec Unconditional Coverage (POF) Likelihood Ratio Test.
-    Includes exact binomial tail probability fallback for N=0 edge cases.
-    """
+    """Kupiec Unconditional Coverage (POF) Likelihood Ratio Test."""
     hits = (actual < var_pred).astype(int)
     N = int(np.sum(hits))
     T = len(hits)
@@ -43,10 +53,7 @@ def kupiec_pof_test(actual, var_pred, alpha=0.01):
 
 
 def christoffersen_independence_test(actual, var_pred):
-    """
-    Christoffersen Markov Interval Independence Test (LR_ind).
-    Tests whether breaches cluster by modeling hits as a first-order Markov chain.
-    """
+    """Christoffersen Markov Interval Independence Test (LR_ind)."""
     hits = (actual < var_pred).astype(int)
     T = len(hits)
 
@@ -82,10 +89,7 @@ def christoffersen_independence_test(actual, var_pred):
 
 
 def engle_manganelli_dq_test(actual, var_pred, alpha=0.01, lags=4):
-    """
-    Engle-Manganelli Dynamic Quantile (DQ) Test.
-    Regresses Hit_t = I_t - alpha on lagged hits and forecasted VaR.
-    """
+    """Engle-Manganelli Dynamic Quantile (DQ) Test."""
     hits = (actual < var_pred).astype(float)
     T = len(hits)
     if T <= lags + 2 or np.sum(hits) == 0:
@@ -112,9 +116,7 @@ def engle_manganelli_dq_test(actual, var_pred, alpha=0.01, lags=4):
 
 
 def diebold_mariano_test(y_true, y_pred1, y_pred2, q=0.01):
-    """
-    Diebold-Mariano test comparing pinball losses with Newey-West HAC standard errors.
-    """
+    """Diebold-Mariano test comparing pinball losses with Newey-West HAC SEs."""
     d_t = pinball_loss(y_true, y_pred1, q) - pinball_loss(y_true, y_pred2, q)
     T = len(d_t)
     if T < 5:
@@ -136,10 +138,71 @@ def diebold_mariano_test(y_true, y_pred1, y_pred2, q=0.01):
     return {"dm_stat": float(dm_stat), "dm_p_value": float(dm_p_val), "mean_diff": float(d_bar)}
 
 
+def mcnell_frey_es_test(actual, var_pred, sigma, alpha=0.01, mu=0.0):
+    """
+    McNeil-Frey Expected Shortfall backtest.
+
+    For every day where the realized return falls below the VaR forecast
+    (an exceedance), standardize the exceedance by the forecast volatility:
+        z_i = (r_i - mu) / sigma_i
+    Under a correctly-specified model, the mean of these standardized
+    exceedances should be consistent with the model's tail expectation. We
+    report the empirical mean tail loss (ES) and a one-sample t-test on the
+    standardized exceedances (H0: zero-mean), which detects whether the
+    model systematically under- or over-states tail severity beyond the VaR.
+
+    This gives the TFT a SECOND dimension (tail SHAPE) to demonstrate value
+    even when VaR breach counts are statistically indistinguishable.
+
+    Returns a dict with the ES estimate, the t-statistic and p-value, and the
+    number of exceedances used.
+    """
+    hits = actual < var_pred
+    n_exceed = int(np.sum(hits))
+
+    if n_exceed < config.ES_MIN_BREACHES:
+        return {
+            "n_exceed": n_exceed,
+            "es_empirical": np.nan,
+            "es_t_stat": np.nan,
+            "es_p_value": np.nan,
+            "es_mean_resid": np.nan,
+        }
+
+    sigma_vals = np.asarray(sigma)[hits]
+    actual_vals = np.asarray(actual)[hits]
+
+    # Empirical ES (average loss beyond the VaR boundary)
+    es_empirical = float(np.mean(actual_vals))
+
+    # Standardized exceedances
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = (actual_vals - mu) / sigma_vals
+    z = z[np.isfinite(z)]
+
+    if len(z) < 2:
+        return {
+            "n_exceed": n_exceed,
+            "es_empirical": es_empirical,
+            "es_t_stat": np.nan,
+            "es_p_value": np.nan,
+            "es_mean_resid": np.nan,
+        }
+
+    # One-sample t-test on standardized exceedances (H0: mean == 0)
+    t_stat, p_val = stats.ttest_1samp(z, 0.0)
+
+    return {
+        "n_exceed": n_exceed,
+        "es_empirical": es_empirical,
+        "es_t_stat": float(t_stat),
+        "es_p_value": float(p_val),
+        "es_mean_resid": float(np.mean(z)),
+    }
+
+
 def multivariate_co_breach_test(actual_dict, var_dict, alpha=0.01):
-    """
-    Evaluates simultaneous tail exceedances across panel indices (NIFTY50, BANKNIFTY, NIFTYIT).
-    """
+    """Evaluates simultaneous tail exceedances across panel indices."""
     tickers = list(actual_dict.keys())
     K = len(tickers)
     T = len(actual_dict[tickers[0]])
@@ -159,37 +222,40 @@ def multivariate_co_breach_test(actual_dict, var_dict, alpha=0.01):
         "panel_size": K,
         "observed_co_breaches": observed_co_breaches,
         "expected_co_breaches": float(expected_co_breaches),
-        "poisson_p_value": float(p_value)
+        "poisson_p_value": float(p_value),
     }
 
 
 def get_basel_traffic_light(failures, total_obs, alpha=0.01):
-    """Calculates Basel III / FRTB Traffic Light status based on binomial CDF."""
+    """Basel III / FRTB Traffic Light status based on binomial CDF."""
     p_cum = stats.binom.cdf(failures, total_obs, alpha)
-    # Regulatory bounds for 99% VaR: Green (cumulative prob < 95%), Yellow (< 99.99%), Red (>= 99.99%)
-    green_limit = stats.binom.ppf(0.95, total_obs, alpha)
-    if p_cum < 0.95:
+    green_limit = stats.binom.ppf(config.BASEL_GREEN_CUM, total_obs, alpha)
+    if p_cum < config.BASEL_GREEN_CUM:
         zone = "GREEN"
-    elif p_cum < 0.9999:
+    elif p_cum < config.BASEL_YELLOW_CUM:
         zone = "YELLOW"
     else:
         zone = "RED"
     return int(green_limit), zone
 
 
-def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, alpha=0.01):
+def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, garch_sigma=None, alpha=0.01):
     """
     Universal dispatcher supporting both DataFrame and explicit array parameters.
+    If a DataFrame is passed, columns are expected to include:
+        Actual or Log_Ret, GARCH_VaR_99, TFT_VaR_99 (or TFT_Downside_99),
+        and optionally GARCH_sigma (for the McNeil-Frey ES backtest).
     """
     if isinstance(actual_or_df, pd.DataFrame):
         df = actual_or_df.copy()
-        act_col = 'Actual' if 'Actual' in df.columns else 'Log_Ret'
-        garch_col = 'GARCH_VaR_99'
-        tft_col = 'TFT_VaR_99' if 'TFT_VaR_99' in df.columns else 'TFT_Downside_99'
+        act_col = "Actual" if "Actual" in df.columns else "Log_Ret"
+        garch_col = "GARCH_VaR_99"
+        tft_col = "TFT_VaR_99" if "TFT_VaR_99" in df.columns else "TFT_Downside_99"
 
         actual = df[act_col].values
         garch_var = df[garch_col].values
         tft_var = df[tft_col].values
+        garch_sigma = df["GARCH_sigma"].values if "GARCH_sigma" in df.columns else None
     else:
         actual = np.asarray(actual_or_df)
         garch_var = np.asarray(garch_var)
@@ -204,6 +270,13 @@ def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, alpha=0.01):
     p_cc = 1.0 - stats.chi2.cdf(lr_cc, df=2)
 
     limit, zone = get_basel_traffic_light(kupiec["N"], kupiec["T"], alpha=alpha)
+
+    # McNeil-Frey Expected Shortfall backtest (tail-shape dimension)
+    if garch_sigma is not None:
+        es = mcnell_frey_es_test(actual, tft_var, garch_sigma, alpha=alpha)
+    else:
+        es = {"n_exceed": np.nan, "es_empirical": np.nan, "es_t_stat": np.nan,
+              "es_p_value": np.nan, "es_mean_resid": np.nan}
 
     return {
         "breaches": kupiec["N"],
@@ -222,25 +295,29 @@ def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, alpha=0.01):
         "dm_stat": dm["dm_stat"],
         "dm_statistic": dm["dm_stat"],
         "dm_p_value": dm["dm_p_value"],
-        "mean_loss_diff": dm["mean_diff"]
+        "mean_loss_diff": dm["mean_diff"],
+        "es_n_exceed": es["n_exceed"],
+        "es_empirical": es["es_empirical"],
+        "es_t_stat": es["es_t_stat"],
+        "es_p_value": es["es_p_value"],
+        "es_mean_resid": es["es_mean_resid"],
     }
 
 
 def evaluate_panel_metrics(panel_df, alpha=0.01):
     """Evaluates metrics across every index in the panel, plus joint co-breaches."""
-    tickers = panel_df['ticker'].unique()
+    tickers = panel_df["ticker"].unique()
     per_ticker = {}
     actual_dict = {}
     var_dict = {}
 
     for t in tickers:
-        sub = panel_df[panel_df['ticker'] == t].sort_values(by='Date')
+        sub = panel_df[panel_df["ticker"] == t].sort_values(by="Date")
         m = calculate_metrics(sub, alpha=alpha)
         per_ticker[t] = m
-        actual_dict[t] = sub['Log_Ret'].values if 'Log_Ret' in sub.columns else sub['Actual'].values
-        var_dict[t] = sub['TFT_VaR_99'].values
+        actual_dict[t] = sub["Log_Ret"].values if "Log_Ret" in sub.columns else sub["Actual"].values
+        var_dict[t] = sub["TFT_VaR_99"].values
 
-    # Determine minimum length for multi-asset alignment
     min_len = min(len(v) for v in actual_dict.values())
     for t in tickers:
         actual_dict[t] = actual_dict[t][-min_len:]
@@ -248,3 +325,52 @@ def evaluate_panel_metrics(panel_df, alpha=0.01):
 
     co_breach = multivariate_co_breach_test(actual_dict, var_dict, alpha=alpha)
     return {"per_ticker": per_ticker, "co_breach": co_breach}
+
+
+def aggregate_seed_metrics(metrics_list):
+    """
+    Aggregates a list of per-seed metric dicts (from calculate_metrics) into
+    Mean +/- Std summary rows, with explicit count of seeds. This enforces
+    honest statistical disclosure across random seeds instead of reporting a
+    single favorable seed.
+
+    Returns a list of dicts, one per distinct metric key, each with:
+        metric, mean, std, values (list), n_seeds
+    """
+    if not metrics_list:
+        return []
+
+    # Collect all unique metric keys across seeds
+    keys = sorted({k for m in metrics_list for k in m.keys()})
+    agg_rows = []
+
+    for k in keys:
+        vals = []
+        for m in metrics_list:
+            v = m.get(k)
+            if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool):
+                vals.append(float(v))
+
+        if not vals:
+            continue
+
+        vals_arr = np.array(vals)
+        agg_rows.append({
+            "metric": k,
+            "mean": float(np.nanmean(vals_arr)),
+            "std": float(np.nanstd(vals_arr, ddof=1)) if len(vals) > 1 else 0.0,
+            "values": [round(v, 6) for v in vals],
+            "n_seeds": len(vals),
+        })
+
+    return agg_rows
+
+
+def format_mean_std(agg_rows, metric_key, decimals=4):
+    """Returns 'mean +/- std' string for a metric, or 'N/A'."""
+    for row in agg_rows:
+        if row["metric"] == metric_key:
+            if np.isnan(row["mean"]):
+                return "N/A"
+            return f"{row['mean']:.{decimals}f} +/- {row['std']:.{decimals}f}"
+    return "N/A"

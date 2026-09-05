@@ -114,8 +114,7 @@ def run_explainability():
         "GARCH_sigma": "Econometric Volatility Prior",
         "GARCH_resid": "Standardized Innovation",
         "relative_time_idx": "Temporal Indexing",
-        "India_VIX_Diff": "Domestic Sentiment Spillover",
-        "Log_Ret": "Contemporaneous Shock",
+        "India_VIX_Diff": "Domestic Volatility (India VIX or RV proxy)",
         "US_VIX_Diff": "Cross-Border Macro Spillover",
         "time_idx": "Panel Timeline"
     }

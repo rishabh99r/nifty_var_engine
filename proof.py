@@ -1,75 +1,89 @@
 # proof.py
+# =============================================================================
+# Baseline econometric & causality proofs.
+#
+# Fixes applied:
+#   - Skew-T GJR-GARCH parameters extracted BY NAME (nu, lambda), never
+#     positionally, so the reported tail-df is meaningful.
+#   - Granger causality uses the ACTUAL US VIX and (real) India VIX daily
+#     log-differences, avoiding the serial-correlation artifacts of
+#     overlapping rolling windows.
+# =============================================================================
 import os
 import warnings
+
 import numpy as np
 import pandas as pd
 from arch import arch_model
 from statsmodels.tsa.stattools import grangercausalitytests
 
-warnings.filterwarnings("ignore")
+import config
 
-DRIVE_DIR = "/content/drive/MyDrive/GARCH_TFT_Results"
+warnings.filterwarnings("ignore")
 
 
 def run_empirical_proofs(df_path="master_df.csv", max_lag=5):
     print("===== RUNNING BASELINE ECONOMETRIC & CAUSALITY PROOFS =====")
     if not os.path.exists(df_path):
-        drive_path = os.path.join(DRIVE_DIR, df_path)
+        drive_path = os.path.join(config.OUTPUT_DIR, df_path)
         if os.path.exists(drive_path):
             df_path = drive_path
         else:
             raise FileNotFoundError(f"[ERROR] {df_path} missing. Run build_data.py first.")
 
-    # Load master dataframe cleanly without index coercion
     df = pd.read_csv(df_path)
     print(f"[LOAD] Loaded multi-series panel ({len(df)} rows across {df['ticker'].nunique()} tickers).")
 
-    tickers = df['ticker'].unique()
+    tickers = df["ticker"].unique()
 
-    # 1. INDEPENDENT GJR-GARCH ESTIMATION ACROSS ALL PANEL ASSETS
+    # 1. INDEPENDENT GJR-GARCH ESTIMATION (keyed-by-name parameter extraction)
     print("\n[STEP 1] Fitting Empirical Skew-T GJR-GARCH(1,1) Across Panel Series...")
     for sym in tickers:
-        sub = df[df['ticker'] == sym].sort_values(by="time_idx").dropna(subset=['Log_Ret'])
-        returns = sub['Log_Ret'].values
-        am = arch_model(returns, vol='Garch', p=1, o=1, q=1, dist='skewt')
-        res = am.fit(disp='off')
+        sub = df[df["ticker"] == sym].sort_values(by="time_idx").dropna(subset=["Log_Ret"])
+        returns = sub["Log_Ret"].values
+        am = arch_model(returns, vol="Garch", p=1, o=1, q=1, dist="skewt")
+        res = am.fit(disp="off")
+
+        nu = float(res.params.get("nu", np.nan))
+        lam = float(res.params.get("lambda", np.nan))
 
         print(f"\n--- Estimated Parameters: {sym} ---")
         print(f"  Omega (Baseline Variance):   {res.params['omega']:.6f}")
         print(f"  Alpha (Symmetric Shock):      {res.params['alpha[1]']:.6f}")
         print(f"  Gamma (Asymmetric Leverage):  {res.params['gamma[1]']:.6f}")
         print(f"  Beta (GARCH Persistence):      {res.params['beta[1]']:.6f}")
-        if 'nu' in res.params:
-            print(f"  Nu (Tail Degrees of Freedom): {res.params['nu']:.4f}")
-        if 'lambda' in res.params:
-            print(f"  Lambda (Skew Parameter):      {res.params['lambda']:.4f}")
+        print(f"  Nu (Tail Degrees of Freedom): {nu:.4f}")
+        print(f"  Lambda (Skew Parameter):      {lam:.4f}")
 
-    # 2. CROSS-BORDER GRANGER CAUSALITY MATRIX (WALL STREET -> DALAL STREET)
-    print("\n[STEP 2] Executing Vector Autoregression Granger Causality (NIFTY 50)...")
-    nifty = df[df['ticker'] == 'NIFTY50'].sort_values(by="time_idx").copy()
+    # 2. CROSS-BORDER GRANGER CAUSALITY on ACTUAL VIX log-differences
+    print("\n[STEP 2] Executing Granger Causality (US VIX <-> India Volatility) on ACTUAL VIX log-diffs...")
+    nifty = df[df["ticker"] == "NIFTY50"].sort_values(by="time_idx").copy()
 
-    # Resolve feature names
-    vix_col = 'US_VIX_Diff' if 'US_VIX_Diff' in nifty.columns else ('VIX_Diff' if 'VIX_Diff' in nifty.columns else None)
-    if vix_col is None and 'US_VIX' in nifty.columns:
-        nifty['US_VIX_Diff'] = nifty['US_VIX'].diff()
-        vix_col = 'US_VIX_Diff'
+    # US VIX: use the actual level series -> daily log-difference (non-overlapping)
+    us_level = nifty["US_VIX_Level"].astype(float)
+    us_logdiff = np.log(us_level).diff()
 
-    if 'India_VIX_Diff' not in nifty.columns:
-        nifty['India_VIX_Diff'] = nifty['Log_Ret'].rolling(5).std().diff()
+    # Domestic: prefer the REAL India VIX level if available; else the proxy
+    if "India_VIX_Level" in nifty.columns and nifty["India_VIX_Level"].notna().sum() > 50:
+        dom_logdiff = np.log(nifty["India_VIX_Level"].astype(float)).diff()
+        domestic_label = "Real India VIX (log-diff)"
+    else:
+        dom_logdiff = nifty["Domestic_RV_Proxy"].astype(float)
+        domestic_label = "Domestic_RV_Proxy (realized-vol proxy)"
 
-    clean_df = nifty[[vix_col, 'India_VIX_Diff']].dropna()
+    clean_df = pd.DataFrame({"us": us_logdiff, "dom": dom_logdiff}).dropna()
     lags = [1, 2, 3, 5]
 
-    print("  -> Computing Wall Street to Dalal Street transmission matrix...")
-    res_forward = grangercausalitytests(clean_df[['India_VIX_Diff', vix_col]], maxlag=max_lag, verbose=False)
+    print(f"  -> Forward: US VIX Granger-causes {domestic_label}")
+    res_forward = grangercausalitytests(clean_df[["dom", "us"]], maxlag=max_lag, verbose=False)
 
-    print("  -> Computing Dalal Street to Wall Street transmission matrix...")
-    res_reverse = grangercausalitytests(clean_df[[vix_col, 'India_VIX_Diff']], maxlag=max_lag, verbose=False)
+    print(f"  -> Reverse: {domestic_label} Granger-causes US VIX")
+    res_reverse = grangercausalitytests(clean_df[["us", "dom"]], maxlag=max_lag, verbose=False)
 
     print("\n--- Granger Causality Significance Matrix (p-values) ---")
     for l in lags:
-        p_fwd = res_forward[l][0]['ssr_chi2test'][1]
-        p_rev = res_reverse[l][0]['ssr_chi2test'][1]
+        p_fwd = res_forward[l][0]["ssr_chi2test"][1]
+        p_rev = res_reverse[l][0]["ssr_chi2test"][1]
         fwd_star = "***" if p_fwd < 0.01 else ("**" if p_fwd < 0.05 else "")
         rev_star = "***" if p_rev < 0.01 else ("**" if p_rev < 0.05 else "")
         print(f"  Lag {l} Day(s):")
