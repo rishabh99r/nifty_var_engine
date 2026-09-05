@@ -78,7 +78,7 @@ def plot_news_impact_curve(master_df_path="master_df.csv"):
     alpha = res.params['alpha[1]']
     gamma = res.params['gamma[1]']
     beta = res.params['beta[1]']
-    uncond_vol = np.sqrt(res.conditional_volatility.iloc[-1] ** 2)
+    uncond_vol = np.sqrt(np.asarray(res.conditional_volatility)[-1] ** 2)
     shocks = np.linspace(-6, 6, 500)
 
     var_sym = omega + alpha * (shocks ** 2) + beta * (uncond_vol ** 2)
