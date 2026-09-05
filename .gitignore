@@ -1,4 +1,18 @@
-*.csv
-*.db
+# Python cache & notebook artifacts
 __pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Local editor & system files
 *.kate-swp
+.DS_Store
+
+# Heavy deep learning weights (prevents GitHub 100MB reject)
+*.ckpt
+*.pt
+*.bin
+
+# Datasets and tabular outputs
+*.csv
+*.parquet
+*.db

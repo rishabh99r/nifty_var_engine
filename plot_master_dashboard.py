@@ -1,4 +1,3 @@
-# plot_master_dashboard.py
 import os
 import warnings
 import numpy as np
@@ -13,13 +12,12 @@ plt.rcParams.update({'font.family': 'serif', 'font.size': 10})
 OUTPUT_DIR = '/content/drive/MyDrive/GARCH_TFT_Results/'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-
 def plot_distribution_fit(df_path="master_df.csv"):
     print("[PLOT] 1/4: Nifty 50 Return Distribution vs. Normal vs. Skew-T...")
     if not os.path.exists(df_path):
         df_path = os.path.join(OUTPUT_DIR, df_path)
-        if not os.path.exists(df_path):
-            return
+    if not os.path.exists(df_path):
+        return
 
     df = pd.read_csv(df_path)
     if 'ticker' in df.columns:
@@ -38,7 +36,7 @@ def plot_distribution_fit(df_path="master_df.csv"):
 
     df_t, loc_t, scale_t = stats.t.fit(returns)
     p_t = stats.t.pdf(x, df_t, loc_t, scale_t)
-    ax.plot(x, p_t, color='#c0392b', linewidth=2.5, label='Student-$t$ Fit (Fat-Tail Resolution)')
+    ax.plot(x, p_t, color='#c0392b', linewidth=2.5, label=r'Student-$t$ Fit (Fat-Tail Resolution)')
 
     ax.set_xlim(-8, 8)
     ax.set_title('Nifty 50 Daily Returns: Parametric Tail Comparison', fontweight='bold')
@@ -46,11 +44,8 @@ def plot_distribution_fit(df_path="master_df.csv"):
     ax.set_ylabel('Density')
     ax.legend(frameon=True, facecolor='white')
     plt.tight_layout()
-
-    out_path = os.path.join(OUTPUT_DIR, 'dashboard_fig1_distribution.png')
-    plt.savefig(out_path, dpi=300)
+    plt.savefig(os.path.join(OUTPUT_DIR, 'dashboard_fig1_distribution.png'), dpi=300)
     plt.close()
-
 
 def plot_risk_river(pred_path="test_tft_predictions.csv", master_path="master_df.csv"):
     print("[PLOT] 2/4: Generating Risk River Backtest Plot...")
@@ -59,28 +54,27 @@ def plot_risk_river(pred_path="test_tft_predictions.csv", master_path="master_df
     if not os.path.exists(master_path):
         master_path = os.path.join(OUTPUT_DIR, master_path)
 
-    if not os.path.exists(pred_path) or not os.path.exists(master_path):
+    if not os.path.exists(pred_path):
         return
 
-    preds = pd.read_csv(pred_path)
-    master = pd.read_csv(master_path)
+    df = pd.read_csv(pred_path)
+    date_col = 'Date' if 'Date' in df.columns else df.columns[0]
+    df[date_col] = pd.to_datetime(df[date_col])
 
-    # Filter master strictly for NIFTY50 to avoid Cartesian product
-    if 'ticker' in master.columns:
-        master = master[master['ticker'] == 'NIFTY50'].copy()
+    if 'Actual' not in df.columns:
+        if 'Log_Ret' in df.columns:
+            df['Actual'] = df['Log_Ret']
+        elif 'Log_Ret_x' in df.columns:
+            df['Actual'] = df['Log_Ret_x']
+        elif os.path.exists(master_path):
+            master = pd.read_csv(master_path)
+            if 'ticker' in master.columns:
+                master = master[master['ticker'] == 'NIFTY50'].copy()
+            m_date = 'Date' if 'Date' in master.columns else master.columns[0]
+            master[m_date] = pd.to_datetime(master[m_date])
+            df = df.merge(master[[m_date, 'Log_Ret']], left_on=date_col, right_on=m_date, how='left')
+            df['Actual'] = df['Log_Ret']
 
-    # Align dates
-    if 'Date' in master.columns:
-        date_col = 'Date'
-    else:
-        date_col = master.columns[0]
-
-    master[date_col] = pd.to_datetime(master[date_col])
-    preds['Date'] = pd.to_datetime(preds['Date'])
-
-    # Merge on Date
-    df = preds.merge(master[[date_col, 'Log_Ret', 'GARCH_VaR_99']], on=date_col, how='inner')
-    df.rename(columns={'Log_Ret': 'Actual'}, inplace=True)
     df.set_index(date_col, inplace=True)
     df.sort_index(inplace=True)
 
@@ -98,22 +92,18 @@ def plot_risk_river(pred_path="test_tft_predictions.csv", master_path="master_df
     ax.set_ylabel('Log Return / VaR Forecast (%)')
     ax.legend(loc='lower left', frameon=True, facecolor='white', fontsize=9)
     plt.tight_layout()
-
-    out_path = os.path.join(OUTPUT_DIR, 'dashboard_fig2_risk_river.png')
-    plt.savefig(out_path, dpi=300)
+    plt.savefig(os.path.join(OUTPUT_DIR, 'dashboard_fig2_risk_river.png'), dpi=300)
     plt.close()
-
 
 def plot_vsn_importance(vsn_path="vsn_feature_importance.csv"):
     print("[PLOT] 3/4: Generating Variable Selection Network (VSN) Importance...")
     if not os.path.exists(vsn_path):
         vsn_path = os.path.join(OUTPUT_DIR, vsn_path)
     if not os.path.exists(vsn_path):
-        print("  [SKIP] VSN feature attribution file not yet generated.")
+        print("  [SKIP] VSN feature attribution file not found yet.")
         return
 
     vsn_df = pd.read_csv(vsn_path).sort_values(by="Percentage", ascending=True)
-
     fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
     bars = ax.barh(vsn_df['Feature'], vsn_df['Percentage'], color='#2980b9')
 
@@ -126,22 +116,18 @@ def plot_vsn_importance(vsn_path="vsn_feature_importance.csv"):
     ax.set_xlabel('Relative Importance Weight (%)')
     ax.set_xlim(0, vsn_df['Percentage'].max() * 1.15)
     plt.tight_layout()
-
-    out_path = os.path.join(OUTPUT_DIR, 'dashboard_fig3_vsn_importance.png')
-    plt.savefig(out_path, dpi=300)
+    plt.savefig(os.path.join(OUTPUT_DIR, 'dashboard_fig3_vsn_importance.png'), dpi=300)
     plt.close()
-
 
 def plot_temporal_attention(attn_path="temporal_attention_distribution.csv"):
     print("[PLOT] 4/4: Generating Multi-Head Temporal Attention Curve...")
     if not os.path.exists(attn_path):
         attn_path = os.path.join(OUTPUT_DIR, attn_path)
     if not os.path.exists(attn_path):
-        print("  [SKIP] Temporal attention weights file not yet generated.")
+        print("  [SKIP] Temporal attention weights file not found yet.")
         return
 
     attn_df = pd.read_csv(attn_path)
-
     fig, ax = plt.subplots(figsize=(8, 4), dpi=300)
     ax.plot(attn_df['Lookback_Lag_Days'], attn_df['Attention_Weight'] * 100, color='#8e44ad', linewidth=2)
     ax.fill_between(attn_df['Lookback_Lag_Days'], attn_df['Attention_Weight'] * 100, color='#8e44ad', alpha=0.2)
@@ -151,15 +137,12 @@ def plot_temporal_attention(attn_path="temporal_attention_distribution.csv"):
     ax.set_ylabel('Attention Weight (%)')
     ax.invert_xaxis()
     plt.tight_layout()
-
-    out_path = os.path.join(OUTPUT_DIR, 'dashboard_fig4_temporal_attention.png')
-    plt.savefig(out_path, dpi=300)
+    plt.savefig(os.path.join(OUTPUT_DIR, 'dashboard_fig4_temporal_attention.png'), dpi=300)
     plt.close()
-
 
 if __name__ == "__main__":
     plot_distribution_fit()
     plot_risk_river()
     plot_vsn_importance()
     plot_temporal_attention()
-    print(f"[SUCCESS] Dashboard charts generated in: {OUTPUT_DIR}")
+    print("[SUCCESS] Master dashboard figures generated.")
