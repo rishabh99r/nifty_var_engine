@@ -197,7 +197,9 @@ def generate_and_save_predictions(tft, test_dataloader, df,
     merged_panel = pred_df.merge(panel_meta, on=["time_idx", "ticker"], how="inner")
 
     # Enforce Asymmetric Model Risk Circuit Breaker: min(Raw_TFT, GARCH_Floor)
-    merged_panel["TFT_VaR_99"] = np.minimum(merged_panel["TFT_VaR_99_Raw"], merged_panel["GARCH_VaR_99"])
+   # merged_panel["TFT_VaR_99"] = np.minimum(merged_panel["TFT_VaR_99_Raw"], merged_panel["GARCH_VaR_99"])
+    # Test pure unconstrained TFT performance (bypassing GARCH floor)
+    merged_panel["TFT_VaR_99"] = merged_panel["TFT_VaR_99_Raw"]
     merged_panel["Date"] = pd.to_datetime(merged_panel["Date"]).dt.strftime('%Y-%m-%d')
     merged_panel = merged_panel.sort_values(by=["Date", "ticker"]).reset_index(drop=True)
 
