@@ -273,10 +273,13 @@ def generate_clean_production_data():
         df["GARCH_resid"] = resid
         df["GARCH_VaR_99"] = var_99
 
-        # NOTE: Explicit Log_Ret_Lag1/Lag2 columns are DELIBERATELY NOT created.
-        # The TFT encoder natively receives the observed target sequence
-        # (Log_Ret up to time t) via encoder_target, so manual lag columns would
-        # duplicate data the network already sees through its temporal encoder.
+        # Explicitly copy the return as a FEATURE so the autoregressive sequence
+        # passes through the Variable Selection Network and its importance is
+        # attributed alongside the macro/econometric priors. Listed as an unknown
+        # real in tft_model.py, this copy feeds the ENCODER only (observed up to
+        # time t) and is hidden from the decoder at t+1 -- leakage-safe, and
+        # keeps `Log_Ret` itself reserved as the prediction target.
+        df["Log_Ret_Feature"] = df["Log_Ret"]
 
         # Macro features aligned to the ticker trading calendar
         macro_df = build_macro_features(us_vix_close, india_vix_close, df.index)

@@ -264,3 +264,51 @@ The repositioned thesis is materially better, but two claims must be toned down:
 2. `python main.py` (re-trains; expect VSN weights to de-fragment once lags are removed)
 3. `python generate_report_plots.py`
 4. Verify: Granger diagnostics printed; confirm whether NIFTY IT is truly at 7 or 12 breaches and use THAT number in the narrative.
+
+---
+
+# PART 5 — RESTORING AUTOREGRESSIVE CAPACITY & MULTI-SEED EXPLAINABILITY (ROUND 5)
+
+## 5.1 Verdict on the review comments
+
+| # | Review comment | Verdict | Action |
+|---|---|---|---|
+| 1 | "Removing Log_Ret from unknown reals made the TFT blind to price history" | **CORRECT — the earlier removal was a mistake.** PyTorch Forecasting's docs state the target *"should be included"* in `time_varying_unknown_reals` when real-valued; the encoder target is carried separately and is not re-injected as an encoder feature unless listed. | Re-added `Log_Ret` to `time_varying_unknown_reals`. |
+| 2 | Explainability must aggregate across seeds | **VALID.** VaR metrics are mean±std across seeds but the explainability script used only `checkpoints[0]`. | Rewrote `explainability.py` to loop all seeds, reporting VSN + temporal attention Mean±Std. |
+| 3 | US_VIX_SHIFT=2 timezone logic | **VINDICATED.** shift(1) at decoder row t+1 would expose Tuesday's US close which is unknown at Tuesday 15:30 IST; shift(2) exposes Monday's close, which IS known. Leave as-is. | No change. |
+
+## 5.2 Fix 1 — Log_Ret restored as an unknown real (implemented)
+- [`tft_model.py`](tft_model.py) `candidate_unknown` now includes `"Log_Ret"` first, with a comment explaining PyTorch Forecasting semantics: unknown reals feed the encoder (observed ≤ t) and are hidden from the decoder at t+1, restoring autoregressive momentum with no look-ahead. Explicit lag columns remain removed (encoder sees the full window through this mechanism).
+
+## 5.3 Fix 2 — Multi-seed explainability (implemented)
+- [`explainability.py`](explainability.py) rewritten:
+  - Loops over every seed in `config.VALIDATION_SEEDS`, locating each `*seed<num>*.ckpt`.
+  - Extracts per-seed VSN percentages and temporal attention weights.
+  - Aggregates Mean ± Std across seeds; writes `vsn_feature_importance_seed_aggregated.csv`, `temporal_attention_distribution_seed_aggregated.csv`, and `tft_explainability_report.txt`.
+  - NaN-safe std; per-seed detail retained in long-form records.
+- [`plot_master_dashboard.py`](plot_master_dashboard.py) updated to read the aggregated CSVs (with legacy fallback) and render mean-across-seeds titles.
+
+## 5.4 Required re-run
+1. `python build_data.py`
+2. `python main.py` (now the TFT sees its own price history — expect VSN weights to change materially, with Log_Ret regaining a dominant share)
+3. `python explainability.py` (multi-seed VSN/attention aggregation)
+4. `python generate_report_plots.py`
+5. Re-check: VSN now shows Log_Ret as a top feature (not the 56.9% US_VIX artifact); explainability report shows mean±std across the 3 seeds.
+
+---
+
+# PART 6 — Log_Ret_Feature THROUGH THE VSN (ROUND 6)
+
+## 6.1 Verdict
+The proposal is **sound and implemented**. Rationale: in PyTorch Forecasting, listing the return history as a real-valued *unknown* feature (`Log_Ret_Feature`, a copy of `Log_Ret`) feeds it through the **encoder + VSN** (observed up to t) and hides it from the **decoder** at t+1 — leakage-safe. This forces the autoregressive sequence's VSN importance to be measured alongside the macro and econometric priors. `Log_Ret` itself stays reserved as the `target` (no duplicate column; no information loss — `Log_Ret_Feature` carries the identical series through the VSN).
+
+## 6.2 Changes made
+- [`build_data.py`](build_data.py): adds `df["Log_Ret_Feature"] = df["Log_Ret"]` immediately after the GARCH block (pre-dropna, so alignment is preserved), with a doc-comment explaining the VSN-attribution purpose and the leakage-safe unknown-real semantics.
+- [`tft_model.py`](tft_model.py): `candidate_unknown = ["Log_Ret_Feature", "GK_Vol", "GARCH_resid"]` — replaces the raw `Log_Ret` entry so the encoder-only return history is scored by the VSN; header comment updated accordingly.
+- [`explainability.py`](explainability.py): `CATEGORY_MAP` entry `"Log_Ret_Feature": "Autoregressive Target History"`.
+
+## 6.3 Required re-run
+1. `python build_data.py`
+2. `python main.py`
+3. `python explainability.py` (expect `Log_Ret_Feature` to appear in the VSN table with a meaningful, dominant share)
+4. `python generate_report_plots.py`

@@ -97,15 +97,23 @@ def plot_risk_river(pred_path="test_tft_predictions.csv", master_path="master_df
     plt.savefig(os.path.join(OUTPUT_DIR, 'dashboard_fig2_risk_river.png'), dpi=300)
     plt.close()
 
-def plot_vsn_importance(vsn_path="vsn_feature_importance.csv"):
-    print("[PLOT] 3/4: Generating Variable Selection Network (VSN) Importance...")
+def plot_vsn_importance(vsn_path="vsn_feature_importance_seed_aggregated.csv"):
+    print("[PLOT] 3/4: Generating Variable Selection Network (VSN) Importance (seed-aggregated)...")
+    if not os.path.exists(vsn_path) and not os.path.exists(os.path.join(OUTPUT_DIR, vsn_path)):
+        # fall back to legacy single-seed file name if the aggregated file is missing
+        vsn_path = "vsn_feature_importance.csv"
     if not os.path.exists(vsn_path):
         vsn_path = os.path.join(OUTPUT_DIR, vsn_path)
     if not os.path.exists(vsn_path):
         print("  [SKIP] VSN feature attribution file not found yet.")
         return
 
-    vsn_df = pd.read_csv(vsn_path).sort_values(by="Percentage", ascending=True)
+    vsn_df = pd.read_csv(vsn_path)
+    # Support both the aggregated schema (mean/std) and the legacy (Percentage)
+    if 'mean' in vsn_df.columns:
+        vsn_df = vsn_df.rename(columns={'mean': 'Percentage'})
+    vsn_df = vsn_df.sort_values(by="Percentage", ascending=True)
+
     fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
     bars = ax.barh(vsn_df['Feature'], vsn_df['Percentage'], color='#2980b9')
 
@@ -114,15 +122,18 @@ def plot_vsn_importance(vsn_path="vsn_feature_importance.csv"):
                     xy=(bar.get_width(), bar.get_y() + bar.get_height() / 2),
                     xytext=(3, 0), textcoords="offset points", ha='left', va='center', fontsize=9)
 
-    ax.set_title('TFT Variable Selection Network (VSN): Feature Attribution', fontweight='bold')
+    ax.set_title('TFT Variable Selection Network (VSN): Feature Attribution (mean across seeds)', fontweight='bold')
     ax.set_xlabel('Relative Importance Weight (%)')
     ax.set_xlim(0, vsn_df['Percentage'].max() * 1.15)
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, 'dashboard_fig3_vsn_importance.png'), dpi=300)
     plt.close()
 
-def plot_temporal_attention(attn_path="temporal_attention_distribution.csv"):
-    print("[PLOT] 4/4: Generating Multi-Head Temporal Attention Curve...")
+def plot_temporal_attention(attn_path="temporal_attention_distribution_seed_aggregated.csv"):
+    print("[PLOT] 4/4: Generating Multi-Head Temporal Attention Curve (seed-aggregated)...")
+    if not os.path.exists(attn_path) and not os.path.exists(os.path.join(OUTPUT_DIR, attn_path)):
+        # fall back to legacy single-seed file name if aggregated file is missing
+        attn_path = "temporal_attention_distribution.csv"
     if not os.path.exists(attn_path):
         attn_path = os.path.join(OUTPUT_DIR, attn_path)
     if not os.path.exists(attn_path):
@@ -130,11 +141,19 @@ def plot_temporal_attention(attn_path="temporal_attention_distribution.csv"):
         return
 
     attn_df = pd.read_csv(attn_path)
-    fig, ax = plt.subplots(figsize=(8, 4), dpi=300)
-    ax.plot(attn_df['Lookback_Lag_Days'], attn_df['Attention_Weight'] * 100, color='#8e44ad', linewidth=2)
-    ax.fill_between(attn_df['Lookback_Lag_Days'], attn_df['Attention_Weight'] * 100, color='#8e44ad', alpha=0.2)
+    # Support both aggregated schema (Lag/Weight mean) and legacy (Lookback_Lag_Days/Attention_Weight)
+    if 'Lag' in attn_df.columns:
+        x = attn_df['Lag']
+        y = attn_df['mean'] if 'mean' in attn_df.columns else attn_df['Weight']
+    else:
+        x = attn_df['Lookback_Lag_Days']
+        y = attn_df['Attention_Weight']
 
-    ax.set_title('Temporal Self-Attention: Historical Memory Receptive Field', fontweight='bold')
+    fig, ax = plt.subplots(figsize=(8, 4), dpi=300)
+    ax.plot(x, y * 100, color='#8e44ad', linewidth=2)
+    ax.fill_between(x, y * 100, color='#8e44ad', alpha=0.2)
+
+    ax.set_title('Temporal Self-Attention: Historical Memory Receptive Field (mean across seeds)', fontweight='bold')
     ax.set_xlabel('Historical Lag (Trading Days Prior to Forecast)')
     ax.set_ylabel('Attention Weight (%)')
     ax.invert_xaxis()
