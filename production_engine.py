@@ -17,6 +17,7 @@ from arch import arch_model
 from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer
 
 import config
+from metrics import extract_garch_dist_params
 
 warnings.filterwarnings("ignore")
 
@@ -40,6 +41,20 @@ def run_live_daily_inference(model_checkpoint_path, live_csv_path="master_df.csv
 
     # 2. Ingest market data buffer
     master_df = pd.read_csv(live_csv_path)
+
+    # FIX 8.7 (schema-drift guard): the live buffer must carry every column the
+    # checkpoint's dataset expects (e.g. Log_Ret_Feature), else from_parameters
+    # fails silently or feeds NaNs. Rebuild the live buffer with the SAME
+    # build_data.py that produced the training frame.
+    required_cols = [c for c in (tft.dataset_parameters.get("time_varying_known_reals") or [])
+                     + (tft.dataset_parameters.get("time_varying_unknown_reals") or [])]
+    missing = [c for c in required_cols if c not in master_df.columns]
+    if missing:
+        raise ValueError(
+            f"[ERROR] Live buffer missing columns required by the checkpoint: {missing}. "
+            f"Re-run build_data.py to regenerate master_df.csv with the same schema."
+        )
+
     target_series = master_df[master_df["ticker"] == target_ticker].sort_values(by="time_idx").copy()
 
     if len(target_series) < config.LOOKBACK_DAYS:
@@ -58,8 +73,13 @@ def run_live_daily_inference(model_checkpoint_path, live_csv_path="master_df.csv
     sigma_t1 = np.sqrt(forecast.variance.iloc[-1, 0])
     mu_t1 = forecast.mean.iloc[-1, 0]
 
-    # Dynamic quantile multiplier (q = 0.01) -- keyed-by-name tail params
-    q01_multiplier = model.distribution.ppf(0.01, res.params[-2:])
+    # Dynamic quantile multiplier (q = 0.01) -- FIX 8.6: use the hardened
+    # extractor instead of fragile positional indexing (params[-2:]) which can
+    # silently corrupt the GARCH reference if arch reorders its parameters.
+    shape = extract_garch_dist_params(res)
+    nu = shape["nu"] if not np.isnan(shape["nu"]) else 5.0
+    lam = shape["lambda"] if not np.isnan(shape["lambda"]) else 0.0
+    q01_multiplier = model.distribution.ppf(0.01, [nu, lam])
     garch_floor_var = mu_t1 + (sigma_t1 * q01_multiplier)
     latest_resid = res.std_resid.iloc[-1]
 

@@ -205,7 +205,7 @@ def plot_all_granger_spillover(master_df):
         ax.bar(x + width / 2, -np.log10(p_rev), width, label="Domestic Vol $\\rightarrow$ US VIX", color="#27ae60")
         ax.axhline(-np.log10(0.05), color="#c0392b", linestyle="--", linewidth=1.5, label="Significance ($\\alpha=0.05$)")
 
-        ax.set_title(f"{sym} Cross-Border Spillover (Daily log-diffs)", fontweight="bold")
+        ax.set_title(f"{sym} Cross-Border Spillover (US VIX -> {domestic_label})", fontweight="bold")
         ax.set_xticks(x)
         ax.set_xticklabels([f"{l}D Lag" for l in lags])
         ax.set_xlabel("Lag Horizon")
@@ -384,20 +384,21 @@ def export_complete_test_suite(panel_df, garch_params, granger_params, master_df
             lam_str = f"{p['lambda']:.3f}" if not np.isnan(p["lambda"]) else "N/A"
             f.write(f"  [{sym}] Omega={p['omega']:.5f}, Alpha={p['alpha']:.5f}, Gamma={p['gamma']:.5f}, "
                     f"Beta={p['beta']:.5f}, df(nu)={nu_str}, lambda={lam_str}\n")
-        f.write("\nCROSS-BORDER CAUSALITY (DAILY LOG-DIFFS on native VIX calendar):\n")
+        f.write("\nCROSS-BORDER CAUSALITY (NATIVE CALENDAR -- no ML timezone shift):\n")
         for sym, g in granger_params.items():
             dom_label = g.get("domestic_label", "")
-            f.write(f"  [{sym}] 1D Lag p={g['p_forward'][0]:.4f} | 2D Lag p={g['p_forward'][1]:.4f} | 5D Lag p={g['p_forward'][3]:.4f}"
-                    f"   (domestic: {dom_label})\n")
+            f.write(f"  [{sym}] US VIX -> {dom_label}:\n")
+            f.write(f"     1D Lag p={g['p_forward'][0]:.4f} | 2D Lag p={g['p_forward'][1]:.4f} | "
+                    f"5D Lag p={g['p_forward'][3]:.4f}\n")
         f.write("\nGRANGER INPUT DIAGNOSTICS (ADF stationarity + calendar-artifact check):\n")
         for sym, g in granger_params.items():
             diag = g.get("diag", {})
             us_d = diag.get("US VIX diff", {})
             dom_d = diag.get("Domestic diff", {})
-            f.write(f"  [{sym}] US VIX: ADF p={_fmt_p(us_d.get('adf_p', np.nan))}, "
+            f.write(f"  [{sym}] US VIX NativeDiff: ADF p={_fmt_p(us_d.get('adf_p', np.nan))}, "
                     f"zero%={_fmt_pct(us_d.get('zero_frac', np.nan))}, "
                     f"dup%={_fmt_pct(us_d.get('dup_frac', np.nan))} | "
-                    f"Domestic: ADF p={_fmt_p(dom_d.get('adf_p', np.nan))}, "
+                    f"Domestic Native: ADF p={_fmt_p(dom_d.get('adf_p', np.nan))}, "
                     f"zero%={_fmt_pct(dom_d.get('zero_frac', np.nan))}, "
                     f"dup%={_fmt_pct(dom_d.get('dup_frac', np.nan))}\n")
         f.write("  [READ] Near-zero Granger p is only credible if ADF p<0.05 (stationary)\n")

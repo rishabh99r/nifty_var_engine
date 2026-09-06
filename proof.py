@@ -59,19 +59,20 @@ def run_empirical_proofs(df_path="master_df.csv", max_lag=5):
         # Report the raw fitted parameter names so any naming surprise is visible
         print(f"  [DEBUG] Fitted parameter names: {list(res.params.index)}")
 
-    # 2. CROSS-BORDER GRANGER CAUSALITY on ACTUAL VIX log-differences
-    print("\n[STEP 2] Executing Granger Causality (US VIX <-> India Volatility) on ACTUAL VIX log-diffs...")
+    # 2. CROSS-BORDER GRANGER CAUSALITY on native (unshifted) VIX log-differences
+    print("\n[STEP 2] Executing Granger Causality (US VIX <-> India Volatility) on NATIVE-CALENDAR log-diffs...")
     nifty = df[df["ticker"] == "NIFTY50"].sort_values(by="time_idx").copy()
 
-    # Build clean series from the *_Diff columns (computed on native VIX
-    # calendar in build_data.py -- never by differencing an ffill()-ed level).
+    # Build chronologically-true series from the *_NativeDiff columns built in
+    # build_data.py (no ML timezone shift -- the econometric test must not use
+    # the shifted *_Diff columns, which would warp the causal lag structure).
     us_logdiff, dom_logdiff, domestic_label = granger_series_from_panel(nifty)
 
     clean_df = pd.DataFrame({"us": us_logdiff, "dom": dom_logdiff}).dropna()
     lags = [1, 2, 3, 5]
 
     # Robustness diagnostics before trusting any near-zero p-value
-    diag = granger_diagnostics({"US VIX diff": clean_df["us"], "Domestic diff": clean_df["dom"]})
+    diag = granger_diagnostics({"US VIX NativeDiff": clean_df["us"], "Domestic Native": clean_df["dom"]})
     print("\n--- Granger Input Diagnostics (ADF stationarity + artifact check) ---")
     print("  " + format_granger_diagnostics(diag))
     print("  [NOTE] Granger p-values are only credible if ADF p<0.05 (stationary)")

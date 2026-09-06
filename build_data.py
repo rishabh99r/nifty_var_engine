@@ -137,10 +137,14 @@ def build_macro_features(us_vix_close, india_vix_close, ticker_index):
     us_level_reindexed = us_vix_close.reindex(ticker_index).ffill()
 
     macro_df = pd.DataFrame(index=ticker_index)
+    # ML timezone-shifted features (leakage-safe for the forecasting pipeline)
     macro_df["US_VIX"] = us_level_reindexed.shift(us_sh)
     macro_df["US_VIX_Diff"] = us_change_reindexed.shift(us_sh)
-    # Native level, timezone-shifted as well (reference/level feature).
     macro_df["US_VIX_Level"] = us_level_reindexed.shift(us_sh)
+    # Native (unshifted) chronological series -- used ONLY by the econometric
+    # Granger-causality test, where a causal lag structure must reflect true
+    # market chronology. Kept separate from the shifted ML columns (FIREWALL).
+    macro_df["US_VIX_NativeDiff"] = us_change_reindexed
 
     if india_vix_close is not None:
         in_log_change = np.log(india_vix_close).diff().dropna()
@@ -150,8 +154,10 @@ def build_macro_features(us_vix_close, india_vix_close, ticker_index):
         macro_df["India_VIX"] = in_level_reindexed.shift(in_sh)
         macro_df["India_VIX_Diff"] = in_change_reindexed.shift(in_sh)
         macro_df["India_VIX_Level"] = in_level_reindexed.shift(in_sh)
+        macro_df["India_VIX_NativeDiff"] = in_change_reindexed
         macro_df["has_real_india_vix"] = True
     else:
+        macro_df["India_VIX_NativeDiff"] = np.nan
         macro_df["has_real_india_vix"] = False
 
     return macro_df
@@ -260,7 +266,15 @@ def generate_clean_production_data():
         df = raw_ticker[["Open", "High", "Low", "Close", "Volume"]].dropna().copy()
 
         df["Log_Ret"] = 100 * np.log(df["Close"] / df["Close"].shift(1))
-        df = df.dropna()
+
+        # FIX 8.3: Copy Log_Ret -> Log_Ret_Feature IMMEDIATELY after creation,
+        # BEFORE any dropna(), so the two series can never desynchronize.
+        # Log_Ret_Feature lets the autoregressive sequence pass through the TFT's
+        # Variable Selection Network (it is listed as an unknown real in
+        # tft_model.py -- encoder-only, hidden from the decoder at t+1).
+        df["Log_Ret_Feature"] = df["Log_Ret"]
+
+        df = df.dropna(subset=["Log_Ret"]).copy()
 
         df = compute_garman_klass(df)
 
@@ -273,32 +287,30 @@ def generate_clean_production_data():
         df["GARCH_resid"] = resid
         df["GARCH_VaR_99"] = var_99
 
-        # Explicitly copy the return as a FEATURE so the autoregressive sequence
-        # passes through the Variable Selection Network and its importance is
-        # attributed alongside the macro/econometric priors. Listed as an unknown
-        # real in tft_model.py, this copy feeds the ENCODER only (observed up to
-        # time t) and is hidden from the decoder at t+1 -- leakage-safe, and
-        # keeps `Log_Ret` itself reserved as the prediction target.
-        df["Log_Ret_Feature"] = df["Log_Ret"]
-
         # Macro features aligned to the ticker trading calendar
         macro_df = build_macro_features(us_vix_close, india_vix_close, df.index)
 
         df["US_VIX"] = macro_df["US_VIX"]
         df["US_VIX_Diff"] = macro_df["US_VIX_Diff"]
         df["US_VIX_Level"] = macro_df["US_VIX_Level"]
+        df["US_VIX_NativeDiff"] = macro_df["US_VIX_NativeDiff"]
+
+        # Domestic realized-vol proxy: native (unshifted) for the econometric
+        # Granger path, plus a timezone-shifted copy for the ML path.
+        df["Domestic_RV_NativeProxy"] = df["Log_Ret"].rolling(5).std().diff()
+        df["Domestic_RV_Proxy"] = df["Domestic_RV_NativeProxy"].shift(1)
 
         if used_real_india:
             df["India_VIX"] = macro_df["India_VIX"]
             df["India_VIX_Diff"] = macro_df["India_VIX_Diff"]
             df["India_VIX_Level"] = macro_df["India_VIX_Level"]
-            df["Domestic_RV_Proxy"] = compute_domestic_rv_proxy(df["Log_Ret"])
+            df["India_VIX_NativeDiff"] = macro_df["India_VIX_NativeDiff"]
         else:
             # Honest fallback: realize-vol proxy, clearly labelled.
             df["India_VIX"] = np.nan
-            df["India_VIX_Diff"] = compute_domestic_rv_proxy(df["Log_Ret"])
+            df["India_VIX_Diff"] = df["Domestic_RV_Proxy"]
             df["India_VIX_Level"] = np.nan
-            df["Domestic_RV_Proxy"] = df["India_VIX_Diff"]
+            df["India_VIX_NativeDiff"] = df["Domestic_RV_NativeProxy"]
 
         df = df.dropna()  # purges warm-up period
 

@@ -330,3 +330,81 @@ Both fixes are sound and implemented in [`metrics.py`](metrics.py):
 ## 7.3 Required verification
 1. `python proof.py` — `Nu (Tail df)` should print a numeric value (not N/A).
 2. `python generate_report_plots.py` — the Granger plot/report should reflect true chronological lead-lag; the ADF + zero/dup diagnostics remain printed for reviewer confidence.
+
+---
+
+# PART 8 — FULL-CODEBASE REVIEW (ROUND 8): SEVERITY-RANKED FINDINGS
+
+## 8.1 FATAL: Granger test contamination — un-shifting samples the FUTURE (and shifts the y-axis too)
+
+In Round 7 the `granger_series_from_panel` helper was changed to un-shift the stored `*_Diff` columns:
+```python
+us  = sub["US_VIX_Diff"].astype(float).shift(-config.US_VIX_SHIFT)      # -2
+dom = sub["India_VIX_Diff"].astype(float).shift(-config.INDIA_VIX_SHIFT)  # -1
+```
+Two independent defects follow:
+
+1. **Negative `shift()` is a LOOK-AHEAD operation.** `US_VIX_Diff` is stored in `master_df.csv` with its ML-timezone lag applied (row D holds `log(US[D-1]/US[D-2])`). `shift(-2)` moves row D+2's value into row D — i.e., the series now contains **future** information relative to the stored calendar. Granger is a *causal* lag test: regressing `Y_t` on `X_{t-k}` with `X` containing future-dated values silently destroys the very causal interpretation the test is meant to establish. The "descriptive in-sample" rationale does not rescue this: even descriptive lead-lag inference requires `X` values to be dated **before** `Y` in the same row. This is a textbook look-ahead, and it directly re-introduces the exact bias the earlier timezone fix was designed to remove.
+
+2. **The shift direction is applied to the WRONG series.** To align an ML-lagged feature back to its true calendar date, the shift must be applied to the feature that was *shifted forward*, not the one being *tested*. `US_VIX_Diff` was shifted by `+US_VIX_SHIFT` at build time; reversing it with `shift(-US_VIX_SHIFT)` restores the US series — but `India_VIX_Diff` (shifted only by `+1`) and the `Domestic_RV_Proxy` (shifted by `+1`) are **also** un-shifted, and the *y-axis* series in the test is `dom` (the domestic one). If the intent was to restore only the US lead so that `US_{t-k}` correctly precedes `dom_t`, then un-shifting the domestic series too is wrong: it double-shifts the lead-lag relationship the other way. The result is a test whose relative timing is *still* misaligned, now in the opposite direction.
+
+**Why this is the single most important finding:** it invalidates every Granger p-value produced after Round 7, and it was introduced to "fix" a Granger artifact that the ADF/zero/dup diagnostics (Round 4) already guarded against. The correct econometric design for a *cross-border lead-lag* test is either (a) test on the true calendar series WITHOUT any ML shift applied (i.e., build separate, unshifted `US_VIX_NativeDiff` columns used only for the econometric test), or (b) drop the un-shift entirely and interpret the shifted lags as the ML horizon (documenting that lag-k in the ML feature = lag-k+2 in true time). Option (a) is the clean fix.
+
+## 8.2 HIGH: Granger diagnostics run on the un-shifted (future-contaminated) series
+
+`granger_diagnostics` is called with `clean_df["us"]` / `clean_df["dom"]` *after* the un-shift in both `proof.py` and `generate_report_plots.py`. So the ADF p-value, zero%, dup% — the very checks meant to certify the series as artifact-free — are computed on the future-contaminated version. The diagnostic therefore certifies the wrong object. Fix (a) above also repairs this.
+
+## 8.3 HIGH: `Log_Ret_Feature` placement in build_data is AFTER the return-dropna but the feature copy is aligned to the pre-dropna frame — verify alignment
+
+In `build_data.py` the copy `df["Log_Ret_Feature"] = df["Log_Ret"]` is created *after* the initial `df = df.dropna()` (line 263) but *before* the final `df = df.dropna()` (line 303). Since `Log_Ret_Feature` is a pure copy of `Log_Ret` and both are dropped on the same rows, alignment is preserved. This is NOT a bug — but it is fragile: any future edit that introduces a NaN into `Log_Ret` after the copy (e.g., a forward-fill or a resample between the two dropna calls) would silently desynchronize the feature from the target. Recommend moving the copy to immediately after `df["Log_Ret"]` is created and before the first dropna, so the two series are definitionally identical for the whole frame.
+
+## 8.4 MEDIUM: `extract_garch_dist_params` fallback ordering can return the WRONG parameter as `nu`
+
+The keyed lookup (Strategy 1) iterates `_DF_ALIASES + _SKEW_ALIASES` in a fixed order and assigns to `out["nu"]` only while `np.isnan`. If the fitted parameter set contains BOTH `nu` (df) and a skew param literally named `lambda`, this is fine. But if arch names the df `eta` and the skew `lambda`, the alias loop will hit `eta` first (good) — however Strategy 2 falls back to positional mapping of `dist.name` order, which is only correct if the distribution's `name` list is ordered [df, skew]. If the order is reversed, `nu` and `lambda` get swapped silently. Since the earlier Colab run produced `nu = nan` while `lambda` extracted fine, there is direct evidence the fallback can misbehave. Recommend printing `res.params.index` (proof.py already does) and validating the mapping once per arch version before trusting the numbers.
+
+## 8.5 MEDIUM: `proof.py` / `generate_report_plots.py` still label the test "US VIX -> India Volatility" even when the domestic side is the RV proxy
+
+Both call sites pass `domestic_label` through, but the on-screen copy in `proof.py` (lines 80, 83) prints `"US VIX Granger-causes {domestic_label}"` — good — while `generate_report_plots.py`'s report section header still says `"CROSS-BORDER CAUSALITY (DAILY LOG-DIFFS on native VIX calendar)"` and the per-ticker row prints the p-values without consistently carrying the `domestic_label`. If the real India VIX was unavailable, the report can still read as "US VIX drives India VIX" when it actually drives a realized-vol proxy. Must be labelled everywhere.
+
+## 8.6 MEDIUM: `production_engine.py` still uses positional `res.params[-2:]` for the quantile multiplier
+
+`q01_multiplier = model.distribution.ppf(0.01, res.params[-2:])` (line 62) — the exact fragile positional indexing that was removed elsewhere. If the arch parameter order changes (as the eta/nu saga proved it can), the deployed VaR floor (even if not applied as an override, it is still *reported* as the GARCH reference) silently corrupts. Should call `extract_garch_dist_params` and pass `(nu, lambda)` explicitly.
+
+## 8.7 LOW: schema drift risk in `generate_and_save_predictions` and `production_engine`
+
+`tft_model.generate_and_save_predictions` merges `df[["time_idx","ticker","Date","Log_Ret","GARCH_VaR_99","GARCH_sigma"]]` into the prediction frame. After the Round 6 feature renames, the frame no longer carries `Log_Ret_Feature` (it is not needed downstream) — correct — but any script that assumed the old `Log_Ret_Lag1/2` columns (e.g., older `plot_*` or report code) would now KeyError. A quick grep confirmed no live reference remains, but the `production_engine` live path reconstructs `encoder_df` from `master_df` and relies on `tft.dataset_parameters` to know which columns to feed; if `master_df` lacks a column the checkpoint expects (e.g. `Log_Ret_Feature` was added to the training frame but the *live* `master_df.csv` used at inference time was regenerated without it), `from_parameters` will fail. The live buffer must be rebuilt from the SAME `build_data.py` that produced the training frame — worth an explicit guard.
+
+## 8.8 Verdict on current state
+- **Publishability gate: not yet clean.** The Granger un-shift (8.1) is a regression that must be reverted/fixed before any causal claim is made. Everything else in the ML/VaR path is structurally sound.
+- The correct fix for 8.1/8.2 is to build **separate, unshifted native-calendar log-diff columns** (`US_VIX_NativeDiff`, `India_VIX_NativeDiff`) used *only* by the econometric Granger path, and leave the ML features timezone-shifted. This keeps the forecasting pipeline leakage-free while giving the econometric test a true chronological series. Recommend implementing that fix.
+
+---
+
+# PART 9 — OPTION-A FIREWALL IMPLEMENTATION (ROUND 9): FIX LOG
+
+All findings 8.1-8.7 have been fixed by separating native (chronological) columns used by the econometric Granger path from the shifted ML columns. This is the "firewall" design.
+
+## 9.1 build_data.py (8.1, 8.3)
+- `Log_Ret_Feature` copy moved to **immediately after** `df["Log_Ret"]` creation and *before* the first `dropna()` — the two series can never desynchronize (8.3).
+- `build_macro_features` now emits BOTH:
+  - **ML (shifted):** `US_VIX_Diff`, `US_VIX_Level`, `India_VIX_Diff` (timezone-lagged, leakage-safe for the TFT).
+  - **Native (unshifted):** `US_VIX_NativeDiff`, `India_VIX_NativeDiff` — chronological daily log-diffs used ONLY by the Granger test.
+- The master frame additionally carries `Domestic_RV_NativeProxy` (unshifted rolling-RV diff, for Granger when no real India VIX) and `Domestic_RV_Proxy` (its `shift(1)` ML copy).
+
+## 9.2 metrics.py (8.1, 8.2, 8.4)
+- `granger_series_from_panel` now reads `US_VIX_NativeDiff` / `India_VIX_NativeDiff` / `Domestic_RV_NativeProxy` with **ZERO shifting** — the future-leak introduced by Round 7's `shift(-lag)` is removed. Docstring documents the firewall.
+- `extract_garch_dist_params` Strategy 2 replaced with a **SkewStudent-specific positional fallback**: guarded on the distribution name, maps trailing `[..., nu, lambda]`. Keyed Strategy 1 retained.
+
+## 9.3 generate_report_plots.py + proof.py (8.5)
+- Report header now reads "NATIVE CALENDAR -- no ML timezone shift"; each asset line prints `US VIX -> {domestic_label}` so the RV-proxy vs real-India-VIX distinction is explicit. Plot titles carry the domestic source too.
+- Diagnostic sub-labels renamed to `US VIX NativeDiff` / `Domestic Native`.
+
+## 9.4 production_engine.py (8.6, 8.7)
+- Positional `res.params[-2:]` replaced with `extract_garch_dist_params` + explicit `[nu, lambda]` passed to `distribution.ppf` (with safe fallbacks 5.0 / 0.0).
+- Added a **schema-drift guard**: the live buffer is checked for every column the checkpoint expects (from `tft.dataset_parameters` known/unknown reals, e.g. `Log_Ret_Feature`), raising a clear error instructing to re-run `build_data.py`.
+
+## 9.5 Re-run required
+1. `python build_data.py` (emits native columns; `Log_Ret_Feature` pre-dropna)
+2. `python main.py` (retrain with unchanged ML features)
+3. `python proof.py` / `python generate_report_plots.py` — Granger now on true chronology; confirm the ADF/zero/dup diagnostics on the NATIVE columns.
+4. `python production_engine.py` — live path guarded.

@@ -33,35 +33,29 @@ _SKEW_ALIASES = ("lambda", "skew", "gamma")
 
 def granger_series_from_panel(sub):
     """
-    Builds clean, non-artifactual (us, domestic) series for Granger causality
-    from one ticker's panel slice.
+    Builds clean, chronologically-true (us, domestic) series for Granger
+    causality from one ticker's panel slice.
 
-    IMPORTANT (timezone alignment): the *_Diff columns are stored in
-    build_data.build_macro_features with ML-timezone lags applied
-    (US_VIX_SHIFT=2, INDIA_VIX_SHIFT=1) so the forecasting pipeline is free of
-    look-ahead bias. Granger causality, however, is a DESCRIPTIVE IN-SAMPLE
-    lead-lag test that regresses Y_t on lags of X -- it does not forecast.
-    To evaluate the true chronological lead-lag structure we therefore UN-SHIFT
-    each series by its own lag (`shift(-lag)`), restoring the exact calendar
-    alignment of the underlying market closes. This makes the standard Granger
-    mapping (X_{t-k} -> Y_t) reflect genuine market chronology.
-
-    The native-calendar differencing guarantee from build_data still holds (no
-    artificial zeros from ffill), and the Domestic_RV_Proxy fallback (built as
-    rv.diff().shift(1)) is un-shifted by -1 to restore its true calendar value.
+    IMPORTANT (native-vs-shifted FIREWALL): the ML forecasting pipeline uses
+    timezone-shifted *_Diff columns (US_VIX_SHIFT=2, INDIA_VIX_SHIFT=1) to stay
+    free of look-ahead bias. Those shifted columns MUST NOT be used for the
+    Granger test -- applying a negative shift() to "undo" them would pull
+    FUTURE values into the present and destroy the causal arrow. Instead,
+    build_data.py now emits separate, UN-shifted *_NativeDiff columns (and
+    Domestic_RV_NativeProxy) that are used ONLY by this econometric test. They
+    are read here with ZERO shifting, so regressing Y_t on X_{t-k} reflects
+    genuine market chronology.
 
     Returns (us_series, dom_series, domestic_label).
     """
-    # Undo the ML timezone shift to restore exact calendar alignment
-    us = sub["US_VIX_Diff"].astype(float).shift(-config.US_VIX_SHIFT)
+    us = sub["US_VIX_NativeDiff"].astype(float)
 
-    if "India_VIX_Diff" in sub.columns and sub["India_VIX_Diff"].notna().sum() > 50:
-        dom = sub["India_VIX_Diff"].astype(float).shift(-config.INDIA_VIX_SHIFT)
-        domestic_label = "Real India VIX (log-diff)"
+    if "India_VIX_NativeDiff" in sub.columns and sub["India_VIX_NativeDiff"].notna().sum() > 50:
+        dom = sub["India_VIX_NativeDiff"].astype(float)
+        domestic_label = "Real India VIX (native calendar)"
     else:
-        # Domestic_RV_Proxy is built as rv.diff().shift(1); un-shift by -1
-        dom = sub["Domestic_RV_Proxy"].astype(float).shift(-1)
-        domestic_label = "Domestic_RV_Proxy (realized-vol proxy)"
+        dom = sub["Domestic_RV_NativeProxy"].astype(float)
+        domestic_label = "Domestic_RV_Proxy (native calendar, realized-vol)"
 
     return us, dom, domestic_label
 
@@ -150,8 +144,8 @@ def extract_garch_dist_params(res):
 
     The arch package can name the skew-t degrees-of-freedom differently across
     versions / mean specifications. This helper first does a KEYED lookup on the
-    fitted parameter names, then falls back to the distribution's declared
-    parameter-name order for the trailing shape parameters.
+    fitted parameter names, then falls back to a SkewStudent-specific positional
+    mapping (the arch SkewStudent always positions [..., nu, lambda] last).
 
     Returns {'nu': float-or-NaN, 'lambda': float-or-NaN}.
     """
@@ -180,26 +174,20 @@ def extract_garch_dist_params(res):
             elif alias in _SKEW_ALIASES and np.isnan(out["lambda"]):
                 out["lambda"] = val
 
-    # Strategy 2: fall back to distribution-declared shape parameter order
+    # Strategy 2: SkewStudent-specific positional fallback. The arch SkewStudent
+    # distribution positions its two shape parameters LAST in the fitted vector,
+    # in the order [..., nu, lambda]. A generic name-order mapping is fragile
+    # across arch versions, so we guard on the distribution name first.
     if (np.isnan(out["nu"]) or np.isnan(out["lambda"])) and hasattr(res.model, "distribution"):
-        dist = res.model.distribution
-        try:
-            dist_names = list(getattr(dist, "name", [])) or []
-            dist_params = list(params)
-            k = len(dist_names)
-            if k > 0 and len(dist_params) >= k:
-                for dname, pval in zip(dist_names, dist_params[-k:]):
-                    try:
-                        pval = float(pval)
-                    except (TypeError, ValueError):
-                        continue
-                    dl = dname.lower()
-                    if dl in _DF_ALIASES and np.isnan(out["nu"]):
-                        out["nu"] = pval
-                    elif dl in _SKEW_ALIASES and np.isnan(out["lambda"]):
-                        out["lambda"] = pval
-        except Exception:
-            pass
+        dist_name = str(getattr(res.model.distribution, "name", "")).lower()
+        if "skew" in dist_name and "student" in dist_name:
+            try:
+                if np.isnan(out["nu"]):
+                    out["nu"] = float(params.iloc[-2])
+                if np.isnan(out["lambda"]):
+                    out["lambda"] = float(params.iloc[-1])
+            except Exception:
+                pass
 
     return out
 
