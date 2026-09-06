@@ -461,3 +461,58 @@ All findings 10.1-10.6 fixed.
 ## 11.5 State
 - All `.py` files parse cleanly. The ML/VaR path, Granger firewall, multi-seed aggregation, honest ES, and `Log_Ret_Feature` VSN attribution are all correct and consistent.
 - These were the final outstanding consistency/robustness items from Round 10; no further blockers identified at this review.
+
+---
+
+# PART 12 — THIRD FULL-CODEBASE REVIEW (ROUND 12): CRITICAL EDGE & CONSISTENCY FINDINGS
+
+## 12.1 HIGH (self-introduced regression in Round 10): `predict=True` collapses the explainability evaluation window
+
+In Round 10, `_build_eval_dataloader` (explainability.py) was changed to pass `predict=True`. In PyTorch Forecasting, `predict=True` restricts the dataset to **one forecast per group at the very end of the time index** (the terminal encoder window) — it is meant for live/single-step inference, exactly as `production_engine.py` uses it.
+
+The model's own out-of-sample test path ([`tft_model.py`](tft_model.py:112,115)) builds val/test datasets with `predict=False` over the full `BACKTEST_DAYS` window, which is what produced the 500-day backtest. By using `predict=True`, the explainability script now interprets only the **final 21-day window** of each ticker — i.e., the VSN/attention attribution is computed on a handful of terminal samples, NOT the 500-day out-of-sample horizon the VaR metrics were validated on. The multi-seed aggregation then averages this tiny-window attribution.
+
+This is a **methodological inconsistency**: the explainability claims "what the network relies on" but now measures only the last month. The Round 10 fix was wrong; `predict=True` was the original 10.6 concern about *empty decoder targets*, but the correct resolution is to slice the frame so every sample has a valid decoder target (e.g. `time_idx <= max_t - encoder_length` with `predict=False`), which preserves the full-horizon samples.
+
+## 12.2 MEDIUM: `rolling_gjr_garch_pit` crash risk when the FIRST refit fails (build_data.py:198-225)
+
+If the very first `am.fit()` raises (e.g., non-convergence on a fresh slice), the `except: pass` leaves `current_res is None` and `last_params = {}`. The recursion then hits:
+- line 222 (`last_q_dist` untouched at the default `-2.326` — silently treated as normal, not skew-t), and
+- line 229 `current_res.conditional_volatility.iloc[-1]` → **AttributeError/TypeError** on `None`.
+
+The loop has no re-attempt / fallback for a failed first fit. Because the refit is only triggered every 21 steps and `current_res is None` is the OR condition, it will retry the next step — but the very first period will crash if convergence fails there. Recommend: attempt fit; if it fails, skip to the next `t` (`continue`) rather than proceeding with `{}` params.
+
+## 12.3 MEDIUM: `GARCH_sigma` is a known real but is filled from the model's own recursion — a subtle train/serve consistency risk
+
+`GARCH_sigma` is the PIT vol and is placed in `time_varying_known_reals`. At inference, `production_engine.py` re-fits GARCH on `history_window` then takes `forecast.variance` — but the model's `GARCH_sigma` column for the last encoder day came from `build_data.py`'s recursion on the FULL history. If the production re-fit (on only the tail `LOOKBACK_DAYS`) yields a materially different sigma for the same day than the build-time recursion, the served encoder feature differs from training. This is inherent to online refitting and is defensible, but the discrepancy is not quantified anywhere. Recommend an explicit check/comment that the live GARCH refit is the SAME code path (same formula, same arch model spec) as build time.
+
+## 12.4 LOW: `generate_and_save_predictions` drops rows where any panel_meta column is NaN
+
+The inner merge (`on time_idx/ticker`) will silently drop any test day where `GARCH_VaR_99`/`GARCH_sigma` is NaN in `master_df` (e.g., the first day after the dropna boundary if the PIT filter still has a gap). The 500-observation totals in the reports imply this never happened, but nothing asserts it. Recommend asserting `len(merged_panel) == expected` (e.g., `backtest_days × n_tickers`).
+
+## 12.5 LOW: `main.py` ranks seeds by NIFTY50 pinball only, but promotes the median seed's FULL panel
+
+`_rank_seeds_by_pinball` reads only the NIFTY50 file to pick the median seed, then promotes that seed's *panel* (all 3 tickers) as canonical. If the per-ticker ranking differs across tickers (e.g., seed X is median on NIFTY50 but worst on NIFTYIT), the "median" label is NIFTY50-specific. Acceptable given the paper's NIFTY50 focus, but the report should say "median by NIFTY50 pinball," which it does — confirm that wording is preserved in the final text.
+
+## 12.6 Summary
+- **12.1 is a genuine regression and must be fixed** — revert `predict=True` in `_build_eval_dataloader` and instead bound the frame to valid encoder windows (`time_idx <= max_t - encoder_len`) so the full out-of-sample horizon is interpreted.
+- 12.2-12.5 are robustness/documentation gaps worth addressing before submission. The ML/VaR backtest path remains valid.
+
+---
+
+# PART 13 — ROUND 12 FIX LOG
+
+## 13.1 explainability.py (12.1)
+- `_build_eval_dataloader` reverted to `predict=False` (the default), so the explainability attribution is computed on the FULL `BACKTEST_DAYS` out-of-sample horizon, matching the horizon the VaR metrics were validated on. `predict=True` had collapsed it to the terminal single window.
+
+## 13.2 build_data.py (12.2)
+- Added a first-fit guard in `rolling_gjr_garch_pit`: if `current_res is None` (the very first fit never succeeded), the day is skipped with `continue` rather than crashing on `current_res.conditional_volatility`. A failed MID-STREAM refit still carries forward the prior day's parameters (documented intent of `except: pass`), so the guard is precise to the first-ever-fit failure case only.
+
+## 13.3 tft_model.py (12.4)
+- `generate_and_save_predictions` now asserts `len(merged_panel) == len(pred_df)` after the inner merge, mathematically guaranteeing no test day was silently dropped due to a NaN GARCH column in `master_df`.
+
+## 13.4 production_engine.py (12.3)
+- Added an explicit train/serve consistency note above the live GARCH refit: the live model uses the exact same arch specification (`mean='Constant', vol='Garch', p=1, o=1, q=1, dist='skewt'`) as the build-time recursion, so the served `GARCH_sigma` prior is generated by the same model family/formula.
+
+## 13.5 State
+- All `.py` files parse cleanly. Findings 12.1-12.4 are resolved; 12.5 (median-seed wording) was confirmed already documented as "median by NIFTY50 pinball" in main.py's report.

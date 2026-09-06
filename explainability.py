@@ -84,14 +84,15 @@ def _extract_attention(interpretation):
 
 def _build_eval_dataloader(tft, df, encoder_len):
     max_t = df["time_idx"].max()
+    # FIX 12.1: predict=False (default) evaluates the FULL out-of-sample
+    # horizon. predict=True would collapse the dataset to a single terminal
+    # forecast per group (the live-inference mode), which is NOT the horizon
+    # the VaR backtest was validated on.
     test_df = df[df["time_idx"] >= (max_t - config.BACKTEST_DAYS - encoder_len)].copy()
-    # FIX 10.6: pass predict=True so the terminal rows (whose decoder target is
-    # not yet realized) are handled correctly and we don't produce empty
-    # decoder targets at the tail of the window.
     eval_dataset = TimeSeriesDataSet.from_parameters(
         tft.dataset_parameters,
         test_df,
-        predict=True,
+        predict=False,
         stop_randomization=True,
     )
     return eval_dataset.to_dataloader(batch_size=64, shuffle=False, num_workers=0)

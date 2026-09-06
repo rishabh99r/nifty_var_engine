@@ -231,6 +231,14 @@ def generate_and_save_predictions(tft, test_dataloader, df, seed,
     panel_meta = df[["time_idx", "ticker", "Date", "Log_Ret", "GARCH_VaR_99", "GARCH_sigma"]].copy()
     merged_panel = pred_df.merge(panel_meta, on=["time_idx", "ticker"], how="inner")
 
+    # FIX 12.4: mathematically guarantee no test day was silently dropped by the
+    # inner merge (e.g. due to a NaN GARCH column in master_df on a test day).
+    expected_len = len(pred_df)
+    assert len(merged_panel) == expected_len, (
+        f"[FATAL] Merge dropped {expected_len - len(merged_panel)} rows. "
+        f"Check master_df for NaNs in GARCH columns on the out-of-sample horizon."
+    )
+
     # The reported VaR is the RAW TFT quantile (validated == deployed).
     merged_panel["TFT_VaR_99"] = merged_panel["TFT_VaR_99_Raw"]
     merged_panel["Date"] = pd.to_datetime(merged_panel["Date"]).dt.strftime("%Y-%m-%d")

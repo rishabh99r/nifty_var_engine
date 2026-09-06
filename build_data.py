@@ -224,6 +224,14 @@ def rolling_gjr_garch_pit(returns_series):
                 # Retain previous parameters if numerical MLE fails
                 pass
 
+        # FIX 12.2: If the VERY FIRST fit never succeeded (current_res is None),
+        # there are no parameters to recurse with -- skip this day rather than
+        # crashing on current_res.conditional_volatility. A failed MID-STREAM
+        # refit is fine: the previous day's parameters remain valid and are
+        # carried forward (that is the documented intent of except: pass).
+        if current_res is None:
+            continue
+
         # 2. Daily variance recursion at t using shock from t-1
         prev_r = returns_series.iloc[t - 1]
         prev_vol = vol_arr[t - 1] if not np.isnan(vol_arr[t - 1]) else current_res.conditional_volatility.iloc[-1]
