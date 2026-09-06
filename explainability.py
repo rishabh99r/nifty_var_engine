@@ -28,7 +28,6 @@ CATEGORY_MAP = {
     "GK_Vol": "Intraday Range Volatility",
     "Log_Ret_Feature": "Autoregressive Target History",
     "GARCH_sigma": "Econometric Volatility Prior",
-    "GARCH_resid": "Standardized Innovation",
     "relative_time_idx": "Temporal Indexing",
     "India_VIX_Diff": "Domestic Volatility (India VIX or RV proxy)",
     "US_VIX_Diff": "Cross-Border Macro Spillover (lagged 2)",
@@ -72,14 +71,24 @@ def _extract_vsn_pct(interpretation, tft):
 
 
 def _extract_attention(interpretation):
-    """Extract mean temporal attention weights (oldest -> most recent lag)."""
+    """
+    Extract mean temporal attention weights (index 0 = MOST RECENT lag).
+
+    FIX 14.5 (documented assumption): pytorch_forecasting's interpret_output
+    attention tensor indexes the encoder history in a fixed order. We assume it
+    is ordered OLDEST->NEWEST, hence the [::-1] reversal so index 0 maps to the
+    most recent lag (lag-1). If the library ever changes/orders it
+    NEWEST->OLDEST, this reversal would invert the reported lag labels. Verify
+    against a printed sample once per pytorch_forecasting version before
+    trusting the lag axis in a publication figure.
+    """
     attn = interpretation["attention"].detach().cpu().numpy()
     if attn.ndim > 1:
         attn = attn.mean(axis=tuple(range(attn.ndim - 1)))
     attn = attn.flatten()
     total = np.sum(attn)
     norm = attn / total if total > 0 else np.ones_like(attn) / len(attn)
-    return norm[::-1]  # index 0 -> most recent lag (lag-1)
+    return norm[::-1]  # assumes oldest->newest encoder ordering; index 0 = lag-1
 
 
 def _build_eval_dataloader(tft, df, encoder_len):

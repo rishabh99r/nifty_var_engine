@@ -156,10 +156,12 @@ def build_macro_features(us_vix_close, india_vix_close, ticker_index):
         macro_df["India_VIX_Diff"] = in_change_reindexed.shift(in_sh)
         macro_df["India_VIX_Level"] = in_level_reindexed.shift(in_sh)
         macro_df["India_VIX_NativeDiff"] = in_change_reindexed
-        macro_df["has_real_india_vix"] = True
     else:
+        # NOTE: when the real India VIX is unavailable, India_VIX_NativeDiff is
+        # left NaN here and the caller (generate_clean_production_data) fills it
+        # with the non-overlapping domestic proxy under the has_real_india_vix=0
+        # provenance flag.
         macro_df["India_VIX_NativeDiff"] = np.nan
-        macro_df["has_real_india_vix"] = False
 
     return macro_df
 
@@ -310,10 +312,20 @@ def generate_clean_production_data():
         df["US_VIX_Level"] = macro_df["US_VIX_Level"]
         df["US_VIX_NativeDiff"] = macro_df["US_VIX_NativeDiff"]
 
-        # Domestic realized-vol proxy: native (unshifted) for the econometric
-        # Granger path, plus a timezone-shifted copy for the ML path.
+        # FIX 14.3: Domestic realized-vol proxy for the Granger path. The
+        # rolling(5).std() transform is OVERLAPPING and inflates serial
+        # correlation in Granger tests, so the econometric fallback series is
+        # now a NON-overlapping daily realized-vol proxy (|daily log-return|).
+        # The overlapping rolling proxy is retained only as a legacy column.
+        df["Domestic_RV_AbsRet"] = df["Log_Ret"].abs()
+        df["Domestic_RV_NativeNonOverlap"] = df["Domestic_RV_AbsRet"]
         df["Domestic_RV_NativeProxy"] = df["Log_Ret"].rolling(5).std().diff()
         df["Domestic_RV_Proxy"] = df["Domestic_RV_NativeProxy"].shift(1)
+
+        # Persist whether the REAL India VIX was used (1) or the proxy fallback
+        # (0). master_df does NOT otherwise retain this, so downstream Granger
+        # labeling cannot infer it from NaN counts (the fallback is NaN-free).
+        df["has_real_india_vix"] = int(used_real_india)
 
         if used_real_india:
             df["India_VIX"] = macro_df["India_VIX"]
@@ -321,11 +333,17 @@ def generate_clean_production_data():
             df["India_VIX_Level"] = macro_df["India_VIX_Level"]
             df["India_VIX_NativeDiff"] = macro_df["India_VIX_NativeDiff"]
         else:
-            # Honest fallback: realize-vol proxy, clearly labelled.
+            # Honest fallback: realize-vol proxy, clearly labelled. Uses the
+            # NON-overlapping series for the native (econometric) column so the
+            # Granger test is not contaminated by rolling-window overlap.
+            # NOTE (16.2): India_VIX and India_VIX_Level are intentionally
+            # all-NaN SENTINEL columns in the fallback (schema stability). The
+            # model never consumes them (not in candidate lists); consumers must
+            # check has_real_india_vix before using them.
             df["India_VIX"] = np.nan
             df["India_VIX_Diff"] = df["Domestic_RV_Proxy"]
             df["India_VIX_Level"] = np.nan
-            df["India_VIX_NativeDiff"] = df["Domestic_RV_NativeProxy"]
+            df["India_VIX_NativeDiff"] = df["Domestic_RV_NativeNonOverlap"]
 
         df = df.dropna()  # purges warm-up period
 

@@ -50,16 +50,26 @@ def granger_series_from_panel(sub):
     """
     us = sub["US_VIX_NativeDiff"].astype(float)
 
-    if "India_VIX_NativeDiff" in sub.columns and sub["India_VIX_NativeDiff"].notna().sum() > 50:
+    # Branch on the persisted provenance flag, NOT a NaN count: the proxy
+    # fallback in build_data fills India_VIX_NativeDiff with the (NaN-free)
+    # abs-return proxy, so a "notna().sum() > 50" test would ALWAYS pass and
+    # mislabel the proxy series as "Real India VIX".
+    if "has_real_india_vix" in sub.columns and bool(sub["has_real_india_vix"].iloc[0]):
         dom = sub["India_VIX_NativeDiff"].astype(float)
         domestic_label = "Real India VIX (native calendar)"
     else:
-        # FIX 10.3: label the RV proxy with the asset's OWN ticker name, since
-        # each ticker's Domestic_RV_NativeProxy is that index's own rolling-vol
-        # proxy (NOT a single shared India-vol series).
-        dom = sub["Domestic_RV_NativeProxy"].astype(float)
+        # FIX 10.3 + 14.3: label the RV proxy with the asset's OWN ticker name
+        # (each ticker's proxy is that index's own vol, not a shared India-vol
+        # series), and use the NON-overlapping |daily return| proxy so the
+        # Granger test is not contaminated by rolling-window overlap.
+        if "Domestic_RV_NativeNonOverlap" in sub.columns:
+            dom = sub["Domestic_RV_NativeNonOverlap"].astype(float)
+            proxy_desc = "realized-vol proxy (|daily return|, non-overlapping)"
+        else:
+            dom = sub["Domestic_RV_NativeProxy"].astype(float)
+            proxy_desc = "rolling-vol proxy (overlapping)"
         ticker_name = sub["ticker"].iloc[0] if "ticker" in sub.columns else "Asset"
-        domestic_label = f"{ticker_name} own realized-vol proxy (native)"
+        domestic_label = f"{ticker_name} own {proxy_desc}"
 
     return us, dom, domestic_label
 

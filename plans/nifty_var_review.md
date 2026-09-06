@@ -516,3 +516,82 @@ The inner merge (`on time_idx/ticker`) will silently drop any test day where `GA
 
 ## 13.5 State
 - All `.py` files parse cleanly. Findings 12.1-12.4 are resolved; 12.5 (median-seed wording) was confirmed already documented as "median by NIFTY50 pinball" in main.py's report.
+
+---
+
+# PART 14 — FOURTH FULL-CODEBASE REVIEW (ROUND 14): STATISTICAL & CROSS-MODULE DEEP-DIVE
+
+## 14.1 HIGH (feature design): `GARCH_resid` is near-collinear with `Log_Ret_Feature` and its timing relative to the decoder is subtle
+
+In `tft_model.py` `candidate_unknown`, both `Log_Ret_Feature` (a copy of `Log_Ret`) and `GARCH_resid` (`(r_t - mu)/sigma_t`) are encoder unknown-reals. `GARCH_resid` is a *scaled copy* of the return innovation — after both are normalized/scaled by PTF, the VSN sees two strongly collinear inputs for the same signal. This (a) fragments the VSN attribution between them, and (b) weakens the identifiability of the "GARCH prior" channel. Recommend either dropping `GARCH_resid` (the econometric prior is already carried by `GARCH_sigma`) or keeping it but documenting the redundancy. Not a correctness bug, but it muddies the interpretability story the paper's VSN analysis rests on.
+
+## 14.2 MEDIUM: DM test model ordering vs. report framing
+
+`diebold_mariano_test(y_true, y_pred1, y_pred2)` computes `d_t = loss(model1) - loss(model2)`, and `calculate_metrics` calls it as `diebold_mariano_test(actual, garch_var, tft_var, q=alpha)` — so `model1 = GARCH`, `model2 = TFT`, and a **negative** `dm_stat` means TFT has lower loss. The report/title in `generate_report_plots.py` prints `DM: {dm_stat:.2f}` with no sign annotation. A negative stat is good for TFT, but the plot/table do not state the convention, so a reader can easily misread a negative DM as "GARCH wins." Add an explicit "(negative = ECTFT lower loss)" note in the figure/table.
+
+## 14.3 MEDIUM: the Granger domestic series is STILL an overlapping rolling statistic
+
+The firewall fixed the *calendar* alignment (native vs shifted) and removed the ffill zeros, but the fallback domestic series `Domestic_RV_NativeProxy = Log_Ret.rolling(5).std().diff()` is still an **overlapping 5-day rolling statistic** — the exact class of artifact flagged in Round 2. Overlapping rolling transforms inflate the serial correlation of the feature and bias Granger p-values low. When real India VIX is unavailable (which the provenance file may show is the common case), the Granger test on the fallback is still contaminated by overlap. Fix: for the econometric test, use a NON-overlapping volatility series (e.g., monthly/weekly realized vol sampled at non-overlapping intervals, or the daily absolute/log-squared return as a realized-vol proxy) or disclose the overlap limitation explicitly.
+
+## 14.4 LOW: multivariate co-breach test assumes independence to set the expected count
+
+`multivariate_co_breach_test` uses `expected_co_breaches = T * alpha**K` (independence of breaches across assets). Under positive cross-asset tail dependence (which is the norm in equity markets, and is precisely what co-breaches measure), the expected joint-breach count under the null of independence is an *upper* bound only if assets are negatively/independently correlated; with positive correlation the independence-implied expected count understates true co-movement. The Poisson p-value is therefore a test of "more co-breaches than independence implies," which is the standard reading, but the report labels it "Tail Independence p-val" without stating the null is independence. Minor; worth a footnote.
+
+## 14.5 LOW: attention-weight reversal convention in explainability
+
+`_extract_attention` returns `norm[::-1]` and labels index 0 as "Lag 1 (most recent)." PTF's `interpret_output` attention weights index the encoder history in a specific (oldest-first) order; the reversal is an assumption. If the library order is already "most-recent-first," the reversal would invert the lag labels (reporting the oldest day as the most recent). Given the report is interpretability-focused, verify this against the actual tensor ordering once (a printed sample) rather than assuming.
+
+## 14.6 LOW: report f-string crash risk on NaN in audit table
+
+The `export_complete_test_suite` row uses `round(m["es_t_stat"], 4) if not np.isnan(...) else "N/A"` and similar guards — good. But `aggregate_seed_metrics` (main.py) prints `f"{row['mean']:>16.4f}"` for every key, including keys whose mean is NaN (e.g., `es_t_stat` when not testable across all seeds). `f"{float('nan'):.4f}"` prints `nan` without crashing, so it is safe, but it renders an unguarded `nan` in the report. Cosmetic.
+
+## 14.7 Summary
+- **14.1 is the most impactful finding** (interpretability semantics): `GARCH_resid` vs `Log_Ret_Feature` collinearity should be addressed or documented before the VSN story is published.
+- 14.2-14.6 are reporting/honesty refinements. None invalidate the backtest; they affect interpretability claims and reader comprehension.
+
+---
+
+# PART 15 — ROUND 14 FIX LOG + ROUND 15 REVIEW
+
+## 15.1 Fixes applied (Round 14 findings)
+- **14.1**: `GARCH_resid` removed from `time_varying_unknown_reals` (near-collinear with `Log_Ret_Feature`); removed its CATEGORY_MAP entry. The econometric prior remains via `GARCH_sigma`. The column stays in `build_data.py` for potential diagnostics but is no longer a model input.
+- **14.2**: DM sign convention annotated in the figure subtitle ("negative = ECTFT lower q0.01 loss") and the audit-table column renamed "Diebold-Mariano Stat (neg=ECTFT)".
+- **14.3**: New non-overlapping domestic proxy `Domestic_RV_NativeNonOverlap = |daily log-return|`; the Granger fallback now uses it (with a label "realized-vol proxy (|daily return|, non-overlapping)"); the overlapping rolling proxy is retained only as a legacy column.
+- **14.4**: Co-breach section now states the Poisson null is INDEPENDENCE explicitly (expected = T*alpha^K).
+- **14.5**: `_extract_attention` docstring documents the oldest->newest ordering assumption behind the `[::-1]` reversal and flags that it must be verified per library version.
+- **14.6**: Multi-seed report uses a NaN-safe formatter so non-testable metrics render as `N/A` instead of `nan`.
+
+## 15.2 Round 15 finding (self-introduced regression in the 14.3 fix — caught and corrected)
+Applying 14.3 exposed a labeling flaw: `granger_series_from_panel` previously branched on `India_VIX_NativeDiff.notna().sum() > 50`. Because the no-real-India-VIX fallback FILLS `India_VIX_NativeDiff` with the (NaN-free) abs-return proxy, that test always passed → the proxy would be (a) silently used and (b) mislabeled "Real India VIX (native calendar)".
+- **Fix**: `build_data.py` now persists `has_real_india_vix` (0/1) into `master_df`; `granger_series_from_panel` branches on that provenance flag instead of a NaN count. The proxy path is now taken and labeled correctly only when the real India VIX was genuinely unavailable.
+
+## 15.3 Round 15 review — remaining notes
+- `has_real_india_vix` is an int column in `master_df` but is NOT in any TFT candidate list, so it is inert to the model (verified: `candidate_known`/`candidate_unknown` are explicit allow-lists).
+- All `.py` files parse cleanly.
+- No new blockers. The pipeline is consistent: leakage-free ML path, Granger firewall with provenance-correct labels, non-overlapping fallback proxy, multi-seed aggregation, honest ES, and `Log_Ret_Feature` VSN attribution.
+
+---
+
+# PART 16 — FINAL FULL-CODEBASE REVIEW (ROUND 16): CROSS-MODULE INTEGRITY
+
+## 16.1 Redundant/unconsumed `has_real_india_vix` in `build_macro_features` (LOW)
+`build_macro_features` sets `macro_df["has_real_india_vix"]` (True/False), but the consumer never copies it into the ticker frame — line 326 sets `df["has_real_india_vix"]` from the *global* `used_real_india` instead. Both reflect the same decision (`india_vix_close is not None`), so this is not a bug, but the `macro_df` flag is dead state and could mislead a future maintainer into reading a value that never reaches `master_df`. Recommend deleting the `macro_df["has_real_india_vix"]` lines.
+
+## 16.2 `df.dropna()` at build_data.py:342 also drops all-NaN India-* columns when real India VIX absent (LOW)
+When `used_real_india=False`, `India_VIX` and `India_VIX_Level` are set to `np.nan` (entire column). The subsequent `df = df.dropna()` drops **rows** with any NaN, not columns — so the all-NaN columns survive into `master_df` as fully-NaN columns. Any consumer that calls `.astype(float)` on them and then `dropna()` is fine (they vanish), but a consumer doing arithmetic would silently produce NaN. This is defensible (schema stability) but should be documented: `India_VIX`/`India_VIX_Level` are all-NaN sentinel columns when the fallback is active.
+
+## 16.3 GK_Vol warm-up NaNs vs the test-window merge (MEDIUM, verify)
+`compute_garman_klass` and the rolling GARCH produce NaN in the first `LOOKBACK_DAYS`, removed by the final `dropna`. But `GK_Vol` itself is only NaN on the very first row (no prior Close) — which the earlier `dropna(subset=["Log_Ret"])` already removed. So `GK_Vol` should be fully populated from the first kept row. However, if `rolling_gjr_garch_pit` ever `continue`s on a failed first fit (12.2), the `GARCH_*` columns for the warm-up are NaN and the final `dropna` removes those rows — so `master_df` should have no GARCH NaN. This is internally consistent but fragile: the "no NaN in the panel" guarantee rests entirely on that single unconditional `dropna`.
+
+## 16.4 FINAL verdict
+After 16 review rounds, the project is internally consistent and ready for a clean re-run:
+- No data leakage in the ML path (timezone-shifted features, PIT GARCH, `Log_Ret_Feature` as encoder-only unknown real).
+- Granger firewall correct (native unshifted columns; provenance-driven labels; non-overlapping fallback proxy).
+- Multi-seed aggregation, honest ES, DM sign annotation, and NaN-safe report formatting all in place.
+- Remaining items (16.1-16.3) are documentation/cleanup, not blockers.
+
+## 16.5 Re-run checklist
+1. `python build_data.py` (re-emits all columns incl. provenance flag)
+2. `python main.py` (train 3 seeds)
+3. `python proof.py` / `python generate_report_plots.py` / `python explainability.py`
+4. Confirm `volatility_provenance.csv` shows the actual India-VIX source used, and the Granger report labels match it.

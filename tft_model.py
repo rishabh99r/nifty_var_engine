@@ -80,10 +80,13 @@ def build_datasets(df, encoder_length=None, backtest_days=None, val_days=None):
     # feeds it to the ENCODER only (observed up to time t) and hides it from the
     # decoder at t+1 -- restoring momentum with NO look-ahead. Log_Ret itself
     # remains the target and is NOT duplicated as a feature.
+    # FIX 14.1: GARCH_resid is deliberately EXCLUDED -- it is a scaled copy of
+    # the same return innovation carried by Log_Ret_Feature, so including both
+    # would feed two near-collinear channels into the VSN and fragment the
+    # attribution. The econometric prior is already represented by GARCH_sigma.
     candidate_unknown = [
         "Log_Ret_Feature",  # return history as an unknown real -> encoder + VSN
         "GK_Vol",
-        "GARCH_resid",
     ]
     unknown_reals = [col for col in candidate_unknown if col in df.columns]
 

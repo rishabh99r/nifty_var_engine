@@ -116,7 +116,17 @@ def main():
     report_lines.append(f"{'Metric':<24}{'Mean':>16}{'Std':>16}")
     report_lines.append("-" * 60)
     for row in agg_rows:
-        report_lines.append(f"{row['metric']:<24}{row['mean']:>16.4f}{row['std']:>16.4f}   values={row['values']}")
+        # FIX 14.6: NaN-safe formatting so non-testable metrics (e.g. ES t-stat
+        # when no seed had >= ES_MIN_BREACHES_TESTABLE) render as 'nan' -> 'N/A'.
+        def _fmt_val(v):
+            try:
+                return "N/A" if float(v) != float(v) else f"{v:.4f}"
+            except (TypeError, ValueError):
+                return "N/A"
+
+        report_lines.append(
+            f"{row['metric']:<24}{_fmt_val(row['mean']):>16}{_fmt_val(row['std']):>16}   values={row['values']}"
+        )
 
     # Select median-performing seed for canonical report artifacts
     median_seed, scores = _rank_seeds_by_pinball(master_df, all_seed_metrics, seed_pred_files)

@@ -304,7 +304,8 @@ def plot_all_loss_comparisons(panel_df):
         ax.plot(df.index, cum_garch, label="GJR-GARCH", color="gray", linestyle="--")
         ax.plot(df.index, cum_tft, label="Econometrically-Conditioned TFT", color="#27ae60", linewidth=2.0)
 
-        sig_txt = f"DM: {m['dm_stat']:.2f} (p={m['dm_p_value']:.4f})"
+        # FIX 14.2: negative dm_stat = ECTFT has LOWER pinball loss (loss(GARCH)-loss(TFT)).
+        sig_txt = f"DM: {m['dm_stat']:.2f} (p={m['dm_p_value']:.4f})" + "\n(negative = ECTFT lower q0.01 loss)"
         ax.set_title(f"{sym}\n{sig_txt}", fontweight="bold", fontsize=10.5)
         ax.set_xlabel("Test Horizon")
         if i == 0:
@@ -343,7 +344,8 @@ def export_complete_test_suite(panel_df, garch_params, granger_params, master_df
             "Christoffersen p-val": round(m["christ_p_value"], 4),
             "Engle-Manganelli DQ Stat": round(m["dq_stat"], 3) if not np.isnan(m["dq_stat"]) else "N/A",
             "DQ p-value": round(m["dq_p_value"], 4) if not np.isnan(m["dq_p_value"]) else "N/A",
-            "Diebold-Mariano Stat": round(m["dm_stat"], 4),
+            # FIX 14.2: negative DM stat = ECTFT has lower pinball loss
+            "Diebold-Mariano Stat (neg=ECTFT)": round(m["dm_stat"], 4),
             "DM p-value": round(m["dm_p_value"], 4),
             "Mean Loss Diff": round(m["mean_loss_diff"], 6),
             "ES n (breaches)": m["es_n_exceed"],
@@ -379,8 +381,11 @@ def export_complete_test_suite(panel_df, garch_params, granger_params, master_df
         f.write("SYSTEMIC RISK & MULTIVARIATE CO-BREACH EVALUATION:\n")
         f.write(f"  - Panel Size:                     {cb['panel_size']} Indices\n")
         f.write(f"  - Observed Simultaneous Hits:     {cb['observed_co_breaches']}\n")
-        f.write(f"  - Expected Independent Hits:      {cb['expected_co_breaches']:.4f}\n")
-        f.write(f"  - Poisson Tail Independence p-val:{cb['poisson_p_value']:.4f}\n")
+        f.write(f"  - Expected Under Independence:    {cb['expected_co_breaches']:.4f}\n")
+        f.write(f"  - Poisson p-val (H0: independence): {cb['poisson_p_value']:.4f}\n")
+        f.write("  [NOTE] The Poisson null is INDEPENDENT breaches across assets\n")
+        f.write("  (expected = T*alpha^K). Under positive cross-asset tail dependence\n")
+        f.write("  this p-val reads as 'more co-breaches than independence implies'.\n")
         f.write("-" * 80 + "\n\n")
         f.write("GJR-GARCH(1,1) SKEW-T ESTIMATED PARAMETERS (robust shape extraction):\n")
         for sym, p in garch_params.items():
