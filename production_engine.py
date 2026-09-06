@@ -55,6 +55,16 @@ def run_live_daily_inference(model_checkpoint_path, live_csv_path="master_df.csv
             f"Re-run build_data.py to regenerate master_df.csv with the same schema."
         )
 
+    # Freshness guard: the buffer must end on a recent trading day, else the
+    # forecast is stale. (Allow a small grace for weekends/holidays.)
+    last_date = pd.to_datetime(master_df["Date"].max())
+    days_stale = (pd.Timestamp.now().normalize() - last_date).days
+    if days_stale > 5:
+        raise ValueError(
+            f"[ERROR] Live buffer is stale ({days_stale} days). "
+            f"Re-run build_data.py (or deployment.py) to refresh master_df.csv."
+        )
+
     target_series = master_df[master_df["ticker"] == target_ticker].sort_values(by="time_idx").copy()
 
     if len(target_series) < config.LOOKBACK_DAYS:
@@ -138,10 +148,9 @@ def run_live_daily_inference(model_checkpoint_path, live_csv_path="master_df.csv
 
 
 if __name__ == "__main__":
-    import glob
-    ckpt_matches = glob.glob(os.path.join(config.OUTPUT_DIR, "*.ckpt"))
-    if ckpt_matches:
-        best_ckpt = ckpt_matches[0]
-        run_live_daily_inference(best_ckpt, live_csv_path="master_df.csv", target_ticker="NIFTY50")
+    from tft_model import select_median_checkpoint
+    ckpt = select_median_checkpoint()
+    if ckpt:
+        run_live_daily_inference(ckpt, live_csv_path="master_df.csv", target_ticker="NIFTY50")
     else:
-        print("[INFO] No trained model checkpoint found on Drive. Run main.py first.")
+        print("[INFO] No trained model checkpoint found. Run main.py first.")

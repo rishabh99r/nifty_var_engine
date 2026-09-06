@@ -203,6 +203,39 @@ def train_tft(df, hidden_size=None, dropout=None, learning_rate=None, seed=42,
     return tft, trainer, best_score, val_dataloader, test_dataloader
 
 
+def select_median_checkpoint(median_seed=None):
+    """
+    Deterministically selects the deployment checkpoint.
+
+    - If median_seed is provided, returns the checkpoint matching
+      '*seed{median_seed}*' if found (local then Drive).
+    - Otherwise reads config.MEDIAN_SEED_FILE if present, else falls back to
+      a stable sort of all champion checkpoints and picks the middle one
+      (never filesystem-arbitrary).
+    Returns the checkpoint path or None.
+    """
+    import glob
+
+    if median_seed is None:
+        try:
+            with open(config.MEDIAN_SEED_FILE, "r") as f:
+                median_seed = int(f.read().strip())
+        except (FileNotFoundError, ValueError):
+            median_seed = None
+
+    if median_seed is not None:
+        for base in (".", config.OUTPUT_DIR):
+            matches = sorted(glob.glob(os.path.join(base, f"*seed{median_seed}*.ckpt")))
+            if matches:
+                return matches[0]
+
+    # Fallback: stable sort of all champion checkpoints, pick the middle.
+    candidates = sorted(glob.glob("*.ckpt") + glob.glob(os.path.join(config.OUTPUT_DIR, "*.ckpt")))
+    if candidates:
+        return candidates[len(candidates) // 2]
+    return None
+
+
 def generate_and_save_predictions(tft, test_dataloader, df, seed,
                                   output_csv=None, panel_csv=None):
     """

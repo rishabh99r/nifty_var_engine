@@ -69,7 +69,7 @@ def clean_yf_columns(raw_df):
     return raw_df.copy()
 
 
-def fetch_vix_pair():
+def fetch_vix_pair(start_date=None, end_date=None):
     """
     Fetches US VIX (^VIX) and, if available, REAL India VIX (^INDIAVIX).
 
@@ -77,7 +77,12 @@ def fetch_vix_pair():
     If the real India VIX has too few observations, returns None for it and the
     caller falls back to a Domestic_RV_Proxy computed from index returns.
     """
-    raw_us = yf.download("^VIX", start=config.START_DATE, end=config.END_DATE, progress=False)
+    if start_date is None:
+        start_date = config.START_DATE
+    if end_date is None:
+        end_date = config.END_DATE
+
+    raw_us = yf.download("^VIX", start=start_date, end=end_date, progress=False)
     if raw_us.empty:
         raise ValueError("[FATAL] Yahoo Finance API failure: Unable to download ^VIX.")
 
@@ -86,7 +91,7 @@ def fetch_vix_pair():
 
     india_vix_close = None
     try:
-        raw_in = yf.download(config.INDIA_VIX_SYMBOL, start=config.START_DATE, end=config.END_DATE, progress=False)
+        raw_in = yf.download(config.INDIA_VIX_SYMBOL, start=start_date, end=end_date, progress=False)
         raw_in = clean_yf_columns(raw_in)
         if not raw_in.empty and "Close" in raw_in.columns:
             india_vix_close = raw_in["Close"].dropna()
@@ -259,13 +264,26 @@ def rolling_gjr_garch_pit(returns_series):
     )
 
 
-def generate_clean_production_data():
+def generate_clean_production_data(start_date=None, end_date=None):
+    """
+    Rebuilds the full master panel.
+
+    - start_date/end_date default to config.START_DATE / config.END_DATE.
+      config.END_DATE is dynamic (today) in production; pass an explicit
+      end_date for a reproducible research cut-off.
+    """
+    if start_date is None:
+        start_date = config.START_DATE
+    if end_date is None:
+        end_date = config.END_DATE
+
     purge_stale_artifacts()
 
     print("[ETL] Fetching historical index panel and cross-border volatility...")
+    print(f"[ETL] Window: {start_date} -> {end_date}")
 
     # 1. US + (attempted) India VIX
-    us_vix_close, india_vix_close, used_real_india = fetch_vix_pair()
+    us_vix_close, india_vix_close, used_real_india = fetch_vix_pair(start_date, end_date)
     if used_real_india:
         print(f"  [ETL] Using REAL India VIX (^INDIAVIX) with {len(india_vix_close)} observations.")
     else:
@@ -275,7 +293,7 @@ def generate_clean_production_data():
 
     for label, symbol in config.TICKERS.items():
         print(f"[ETL] Downloading and processing series: {label} ({symbol})...")
-        raw_ticker = yf.download(symbol, start=config.START_DATE, end=config.END_DATE, progress=False)
+        raw_ticker = yf.download(symbol, start=start_date, end=end_date, progress=False)
         if raw_ticker.empty:
             raise ValueError(f"[FATAL] Failed downloading data for {symbol}.")
 

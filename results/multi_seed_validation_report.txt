@@ -1,0 +1,32 @@
+================================================================================
+      MULTI-SEED VALIDATION REPORT (MEAN +/- STD ACROSS SEEDS)
+================================================================================
+Seeds: [42, 123, 777] (n = 3)
+
+Metric                              Mean             Std
+------------------------------------------------------------
+basel_limit                       9.0000          0.0000   values=[9.0, 9.0, 9.0]
+breaches                          2.0000          1.0000   values=[2.0, 3.0, 1.0]
+cc_p_value                        0.3363          0.2627   values=[0.305887, 0.612808, 0.090114]
+cc_stat                           2.7206          1.9410   values=[2.369079, 0.979407, 4.813361]
+christ_p_value                    0.9160          0.0770   values=[0.899041, 0.848917, 1.0]
+christ_stat                       0.0175          0.0182   values=[0.016097, 0.036291, 0.0]
+dm_p_value                        0.1060          0.1025   values=[0.002301, 0.108389, 0.207161]
+dm_stat                          -1.9717          0.9481   values=[-3.048358, -1.605478, -1.261412]
+dm_statistic                     -1.9717          0.9481   values=[-3.048358, -1.605478, -1.261412]
+dq_p_value                        0.8919          0.1093   values=[0.929234, 0.977693, 0.768896]
+dq_stat                           2.1294          1.0833   values=[1.893436, 1.183472, 3.311193]
+es_empirical                     -2.8129          0.1673   values=[-3.006095, -2.717485, -2.715175]
+es_mean_resid                    -3.2090          0.0512   values=[-3.191365, -3.266634, -3.168938]
+es_n_exceed                       2.0000          1.0000   values=[2.0, 3.0, 1.0]
+es_p_value                           N/A             N/A   values=[nan, nan, nan]
+es_t_stat                            N/A             N/A   values=[nan, nan, nan]
+kupiec_p_value                    0.1616          0.1549   values=[0.125044, 0.331478, 0.02824]
+kupiec_stat                       2.7032          1.9587   values=[2.352982, 0.943116, 4.813361]
+mean_loss_diff                   -0.0034          0.0013   values=[-0.004853, -0.00278, -0.002484]
+tft_failures                      2.0000          1.0000   values=[2.0, 3.0, 1.0]
+total_obs                       500.0000          0.0000   values=[500.0, 500.0, 500.0]
+
+Median-performing seed (by NIFTY50 pinball loss): 123
+Pinball loss per seed: {42: 0.030837345046265827, 123: 0.028764488822719664, 777: 0.028468772797381494}
+NOTE: The canonical report tables show the MEDIAN seed trajectory, not a cherry-picked best seed.

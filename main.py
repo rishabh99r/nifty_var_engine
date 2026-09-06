@@ -12,6 +12,8 @@
 #     (by NIFTY50 pinball loss), explicitly captioned, never a cherry-picked
 #     best seed.
 # =============================================================================
+import datetime
+import json
 import os
 import shutil
 
@@ -27,6 +29,39 @@ CHAMPION_PARAMS = {
     "dropout": config.DROPOUT,
     "learning_rate": config.LEARNING_RATE,
 }
+
+
+def _load_deployment_state():
+    """Load the deployment cadence state JSON (empty dict if absent/corrupt)."""
+    try:
+        with open(config.DEPLOYMENT_STATE_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_deployment_state(state):
+    with open(config.DEPLOYMENT_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def _record_deployment_retrain(median_seed):
+    """Record that a TFT retrain happened now (used by deployment.py cadence).
+
+    Stores the current trading-day index (from the freshly built master_df) as
+    the retrain anchor, plus the median seed and date. deployment.py compares
+    the current time_idx against this anchor to decide when to retrain next.
+    """
+    state = _load_deployment_state()
+    try:
+        master = pd.read_csv("master_df.csv")
+        max_idx = int(master["time_idx"].max())
+    except Exception:
+        max_idx = state.get("last_tft_retrain_idx", 0)
+    state["last_tft_retrain_idx"] = max_idx
+    state["median_seed"] = int(median_seed)
+    state["last_tft_retrain_date"] = datetime.date.today().isoformat()
+    _save_deployment_state(state)
 
 
 def _fmt_val(v, decimals=4):
@@ -148,6 +183,13 @@ def main():
     shutil.copy(seed_pred_files[median_seed], "test_tft_predictions.csv")
     shutil.copy(seed_panel_files[median_seed], "test_tft_predictions_panel.csv")
     print(f"[CANONICAL] Median seed {median_seed} promoted to test_tft_predictions*.csv")
+
+    # Persist the median-seed and the retrain timestamp for the production
+    # deployment scheduler (deployment.py reads these to select the checkpoint
+    # deterministically and to know when the TFT was last retrained).
+    with open(config.MEDIAN_SEED_FILE, "w") as f:
+        f.write(str(median_seed))
+    _record_deployment_retrain(median_seed)
 
     # Persist to Google Drive if mounted
     if os.path.exists("/content/drive/MyDrive"):

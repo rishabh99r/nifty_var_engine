@@ -7,7 +7,14 @@
 import os
 import random
 
+import datetime
+
 import numpy as np
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 try:
     import torch
@@ -38,7 +45,10 @@ def set_seed(seed):
 # NOTE: ^INDIAVIX has limited history on Yahoo Finance. If coverage is
 # insufficient we fall back to an honestly-labelled realized-volatility proxy.
 START_DATE = "2015-01-01"
-END_DATE = "2026-08-01"
+# END_DATE is DYNAMIC: in production it resolves to "today" at runtime so the
+# buffer always reflects the latest available trading day. A fixed research
+# cut-off can be passed explicitly (e.g. build_data.generate_clean_production_data(end_date=...)).
+END_DATE = datetime.date.today().isoformat()
 
 TICKERS = {
     "NIFTY50": "^NSEI",
@@ -74,6 +84,24 @@ LOOKBACK_DAYS = 1000      # estimation window for each parameter refit
 REFIT_FREQ = 21           # monthly (21 trading days) parameter re-estimation
 VAR_ALPHA = 0.01          # 99% VaR
 GARCH_MIN_VARIANCE = 1e-6
+
+# ----------------------------------------------------------------------------
+# PRODUCTION CADENCE (deployment scheduling)
+# ----------------------------------------------------------------------------
+# GARCH parameters are refit every GARCH_REFIT_DAYS trading days (~1 month).
+# The TFT is retrained every TFT_RETRAIN_DAYS trading days (~6 months).
+# Both refits use their respective trailing windows:
+#   - GARCH refit  : refit on the trailing LOOKBACK_DAYS (=1000) trading days.
+#   - TFT retrain  : retrain the full multi-seed TFT (main.py) on the full
+#                    available history (optionally capped) with the same
+#                    train/val/test split discipline.
+# These cadence anchors live in deployment state (deployment_state.json); the
+# "next due" index is computed as last_refit + REFIT_FREQ in trading-day units.
+GARCH_REFIT_DAYS = 21     # trading days between GARCH parameter refits (~1 month)
+TFT_RETRAIN_DAYS = 126    # trading days between TFT retrains (~6 months)
+# State file for the production cadence bookkeeping.
+DEPLOYMENT_STATE_FILE = "deployment_state.json"
+MEDIAN_SEED_FILE = "median_seed.txt"
 
 # ----------------------------------------------------------------------------
 # TFT ARCHITECTURE (Champion config -- kept as the auditable, committed spec)
