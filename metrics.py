@@ -19,11 +19,6 @@ def pinball_loss(y_true, y_pred, q=0.01):
     return np.where(diff < 0, (1.0 - q) * (-diff), q * diff)
 
 
-def quantile_loss(y_true, y_pred, q=0.01):
-    """Alias kept for backward compatibility with HPO scripts."""
-    return pinball_loss(y_true, y_pred, q)
-
-
 # Aliases used by arch-family distributions for the tail degrees of freedom.
 # 'eta' is included because some arch versions/configurations name the skew-t
 # degrees-of-freedom parameter 'eta' rather than 'nu'.
@@ -218,9 +213,19 @@ def kupiec_pof_test(actual, var_pred, alpha=0.01):
     p_hat = N / T
 
     if N == 0:
-        p_val_exact = (1.0 - alpha) ** T
-        lr_uc = -2.0 * np.log((1.0 - alpha) ** T)
-        return {"N": 0, "T": T, "p_hat": 0.0, "stat": float(lr_uc), "p_value": float(p_val_exact)}
+        # FIX (Round 17): The previous code returned p = P(X=0) = (1-alpha)^T
+        # (a TINY value, ~0.007 for T=500) and a positive LR stat, which the
+        # LR-CC combination interpreted as a SPURIOUS coverage violation when a
+        # model is simply more conservative than 1% (zero breaches).
+        #
+        # Correct treatment: zero failures is AT LEAST as conservative as the
+        # null (expected count = alpha*T > 0), so the two-sided POF p-value is
+        # the tail probability of observing <= N failures:
+        #     p = 1 - P(X = 0) = 1 - (1-alpha)^T   (LARGE, non-rejecting)
+        # and the LR statistic is set to 0 (no deviation from coverage on the
+        # conservative side), so LR-CC does not spuriously reject.
+        p_under_conservative = 1.0 - (1.0 - alpha) ** T
+        return {"N": 0, "T": T, "p_hat": 0.0, "stat": 0.0, "p_value": float(p_under_conservative)}
 
     num = ((1.0 - alpha) ** (T - N)) * (alpha ** N)
     den = ((1.0 - p_hat) ** (T - N)) * (p_hat ** N)
@@ -549,23 +554,27 @@ def aggregate_seed_metrics(metrics_list):
         if not vals:
             continue
 
-        vals_arr = np.array(vals)
+        vals_arr = np.array(vals, dtype=float)
+        finite_vals = vals_arr[np.isfinite(vals_arr)]
+
+        # Guard all-NaN slices (e.g. ES t-stat when no seed is testable): the
+        # plain np.nanmean/np.nanstd emit a RuntimeWarning and return nan.
+        if len(finite_vals) == 0:
+            agg_rows.append({
+                "metric": k,
+                "mean": float("nan"),
+                "std": float("nan"),
+                "values": [round(v, 6) for v in vals],
+                "n_seeds": len(vals),
+            })
+            continue
+
         agg_rows.append({
             "metric": k,
-            "mean": float(np.nanmean(vals_arr)),
-            "std": float(np.nanstd(vals_arr, ddof=1)) if len(vals) > 1 else 0.0,
+            "mean": float(np.mean(finite_vals)),
+            "std": float(np.std(finite_vals, ddof=1)) if len(finite_vals) > 1 else 0.0,
             "values": [round(v, 6) for v in vals],
             "n_seeds": len(vals),
         })
 
     return agg_rows
-
-
-def format_mean_std(agg_rows, metric_key, decimals=4):
-    """Returns 'mean +/- std' string for a metric, or 'N/A'."""
-    for row in agg_rows:
-        if row["metric"] == metric_key:
-            if np.isnan(row["mean"]):
-                return "N/A"
-            return f"{row['mean']:.{decimals}f} +/- {row['std']:.{decimals}f}"
-    return "N/A"

@@ -86,7 +86,12 @@ def load_datasets(panel_file="test_tft_predictions_panel.csv", master_file="mast
         else:
             panel_df["TFT_Upside_99"] = np.abs(panel_df["TFT_Downside_99"]) * 0.92
 
-    panel_df["GARCH_Upside_99"] = np.abs(panel_df["GARCH_VaR_99"]) * 0.90
+    # NOTE (Round 18): GARCH_Upside_99 is a HEURISTIC reference (0.9 * |downside
+    # VaR|), NOT a real asymmetric upside quantile from the skew-t model. It is
+    # only for visual context in the risk-river figure and MUST be labelled as a
+    # heuristic, never presented as a model forecast.
+    panel_df["GARCH_Upside_99_heuristic"] = np.abs(panel_df["GARCH_VaR_99"]) * 0.90
+    panel_df["GARCH_Upside_99"] = panel_df["GARCH_Upside_99_heuristic"]
     return panel_df, master_df
 
 
@@ -236,7 +241,8 @@ def plot_all_risk_rivers(panel_df):
         ax.plot(df.index, df["TFT_Downside_99"], color="#c0392b", linewidth=1.8, label="ECTFT 99% Long VaR")
         ax.plot(df.index, df["GARCH_VaR_99"], color="#e67e22", linestyle=":", linewidth=1.3, label="GJR-GARCH 99% VaR")
         ax.plot(df.index, df["TFT_Upside_99"], color="#2980b9", linewidth=1.8, label="ECTFT 99% Short VaR")
-        ax.plot(df.index, df["GARCH_Upside_99"], color="#8e44ad", linestyle=":", linewidth=1.3, label="GJR-GARCH 99% Short")
+        ax.plot(df.index, df["GARCH_Upside_99"], color="#8e44ad", linestyle=":", linewidth=1.3,
+                label="GARCH upside heuristic (0.9x|downside|)")
 
         ax.fill_between(df.index, df["TFT_Downside_99"], df["TFT_Upside_99"], color="#34495e", alpha=0.08, label="Safe Trading Corridor")
 
@@ -320,7 +326,7 @@ def plot_all_loss_comparisons(panel_df):
 # =====================================================================
 # 7. AGGREGATED AUDIT TABLE & REPORT EXPORT (across all seeds)
 # =====================================================================
-def export_complete_test_suite(panel_df, garch_params, granger_params, master_df=None):
+def export_complete_test_suite(panel_df, garch_params, granger_params):
     print("\n[EXPORT] Compiling aggregated test suite tables and audit summaries...")
 
     panel_eval = evaluate_panel_metrics(panel_df)
@@ -435,5 +441,5 @@ if __name__ == "__main__":
     plot_all_risk_rivers(panel_data)
     plot_all_backtest_tracking(panel_data)
     plot_all_loss_comparisons(panel_data)
-    export_complete_test_suite(panel_data, garch_dict, granger_dict, master_df=master_data)
+    export_complete_test_suite(panel_data, garch_dict, granger_dict)
     print(f"\n[COMPLETE] All 3-series publication figures and audit tables saved to: {OUTPUT_DIR}")

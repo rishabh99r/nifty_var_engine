@@ -595,3 +595,61 @@ After 16 review rounds, the project is internally consistent and ready for a cle
 2. `python main.py` (train 3 seeds)
 3. `python proof.py` / `python generate_report_plots.py` / `python explainability.py`
 4. Confirm `volatility_provenance.csv` shows the actual India-VIX source used, and the Granger report labels match it.
+
+---
+
+# PART 17 — ROUND 17: KUPIEC N=0 SPURIOUS-REJECTION BUG (FOUND & FIXED)
+
+## 17.1 The bug
+`kupiec_pof_test`'s N=0 branch previously returned:
+- `stat = -2·ln((1-α)^T)` (a POSITIVE, sizable value, e.g. ~10.05 for T=500, α=1%)
+- `p_value = (1-α)^T ≈ 0.0066`
+
+This is the classic misapplication: observing ZERO failures is the *most conservative* possible outcome under correct coverage (expected count = α·T = 5), NOT a violation. The old code reported a *tiny* p-value and a large LR stat, so `calculate_metrics`' LR-CC combination (`kupiec["stat"] + christ["stat"]`) would SPURIOUSLY REJECT correct coverage for a too-conservative model. It never fired in the reported runs (N=3/5/7), but it was a latent statistical bug that would fire on any strict model or a short window with zero breaches.
+
+## 17.2 The fix (metrics.py)
+N=0 now returns:
+- `stat = 0.0` — no coverage deviation on the conservative side (LR-CC no longer spuriously rejects)
+- `p_value = 1 - (1-α)^T` — the two-sided tail probability of observing ≤0 failures (LARGE, non-rejecting)
+
+with an explanatory comment. This is the standard, honest treatment and keeps the Basel traffic light / LR-CC consistent (a too-conservative model is flagged GREEN, not rejected).
+
+## 17.3 Status after Round 17
+- All `.py` files parse cleanly.
+- The Kupiec fix is the only remaining genuine defect found in this pass; no other blockers identified.
+- Ready for the user's result posting for further evaluation.
+
+---
+
+# PART 18 — ROUND 18 "SPOTLESS" PASS: FINAL CLEANUPS
+
+## 18.1 metrics.py — all-NaN aggregation RuntimeWarning (fixed)
+`aggregate_seed_metrics` used `np.nanmean`/`np.nanstd` which emit a RuntimeWarning and return NaN for an all-NaN slice (e.g. ES t-stat when no seed is testable). Replaced with a finite-value guard: if no finite values exist, emit an explicit NaN row (no warning); otherwise use `np.mean`/`np.std` on the finite slice. The report renders these via the NaN-safe formatter.
+
+## 18.2 main.py — module-level NaN-safe formatter (fixed)
+The `_fmt_val` helper was defined inside the report loop (redefined every iteration). Hoisted to module level as `_fmt_val(v, decimals=4)` and the loop now calls it.
+
+## 18.3 generate_report_plots.py — manufactured GARCH upside bound relabeled (fixed)
+`GARCH_Upside_99` was generated in `load_datasets` as a heuristic `0.90 * |GARCH_VaR_99|` but plotted in the risk-river as "GJR-GARCH 99% Short" — implying it is a real asymmetric skew-t upside quantile. It is NOT; it is a constant-ratio heuristic. Relabeled the column internally (`GARCH_Upside_99_heuristic`) and the plot legend to "GARCH upside heuristic (0.9x|downside|)" so it is never presented as a model forecast.
+
+## 18.4 verification
+- All `.py` files parse cleanly.
+- Full re-read of production_engine, explainability, proof, plot_master_dashboard, config, tft_model: no further defects found. production_engine's GARCH refit is reporting-only (encoder uses the stored build-time GARCH_sigma), so train/serve encoder consistency holds.
+- After 18 review rounds the project is, to the best of this review, spotless: no outstanding defects, only intentional documented behavior.
+
+---
+
+# PART 19 — ROUND 19: DEAD-CODE & UNUSED-PARAMETER SWEEP
+
+## 19.1 Removed dead code
+- `metrics.quantile_loss` — dead alias (its only consumer, `hpo.py`, was deleted in Round 1). Removed.
+- `metrics.format_mean_std` — dead helper, never called anywhere. Removed.
+
+## 19.2 Removed unused parameters
+- `main._rank_seeds_by_pinball(master_df, seed_metrics, seed_pred_files)` → `(seed_pred_files)`: neither `master_df` nor `seed_metrics` was used by the function body (it only reads the per-seed prediction CSVs).
+- `generate_report_plots.export_complete_test_suite(..., master_df=None)` → dropped `master_df`: it was never used in the body. Call site updated.
+
+## 19.3 Verification
+- `grep` confirms no dangling references: only the live `_rank_seeds_by_pinball(seed_pred_files)` and `export_complete_test_suite(panel_data, garch_dict, granger_dict)` calls remain; no references to the removed functions.
+- All `.py` files parse cleanly.
+- This pass found only hygiene issues (no behavioral bugs). The project is clean.

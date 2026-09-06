@@ -29,7 +29,18 @@ CHAMPION_PARAMS = {
 }
 
 
-def _rank_seeds_by_pinball(master_df, seed_metrics, seed_pred_files):
+def _fmt_val(v, decimals=4):
+    """NaN-safe numeric formatter for the multi-seed report."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "N/A"
+    if v != v:  # NaN check (NaN != NaN)
+        return "N/A"
+    return f"{v:.{decimals}f}"
+
+
+def _rank_seeds_by_pinball(seed_pred_files):
     """
     Ranks seeds by the NIFTY50 mean pinball loss on the out-of-sample horizon.
     Returns the seed with the MEDIAN performance (neither best nor worst).
@@ -115,21 +126,15 @@ def main():
     report_lines.append("")
     report_lines.append(f"{'Metric':<24}{'Mean':>16}{'Std':>16}")
     report_lines.append("-" * 60)
+    # FIX 14.6: NaN-safe formatting (module-level _fmt_val) so non-testable
+    # metrics (e.g. ES t-stat when no seed is testable) render as N/A not nan.
     for row in agg_rows:
-        # FIX 14.6: NaN-safe formatting so non-testable metrics (e.g. ES t-stat
-        # when no seed had >= ES_MIN_BREACHES_TESTABLE) render as 'nan' -> 'N/A'.
-        def _fmt_val(v):
-            try:
-                return "N/A" if float(v) != float(v) else f"{v:.4f}"
-            except (TypeError, ValueError):
-                return "N/A"
-
         report_lines.append(
             f"{row['metric']:<24}{_fmt_val(row['mean']):>16}{_fmt_val(row['std']):>16}   values={row['values']}"
         )
 
     # Select median-performing seed for canonical report artifacts
-    median_seed, scores = _rank_seeds_by_pinball(master_df, all_seed_metrics, seed_pred_files)
+    median_seed, scores = _rank_seeds_by_pinball(seed_pred_files)
     report_lines.append("")
     report_lines.append(f"Median-performing seed (by NIFTY50 pinball loss): {median_seed}")
     report_lines.append(f"Pinball loss per seed: {scores}")
