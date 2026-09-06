@@ -3,10 +3,11 @@
 # Publication figure generation and audit report export.
 #
 # Methodology fixes applied:
-#   - Granger causality uses the ACTUAL VIX series daily LOG-DIFFERENCES
-#     (US_VIX_Level / India_VIX_Level), NOT overlapping rolling windows.
-#   - GARCH skew-t degrees of freedom are extracted BY NAME (params['nu']),
-#     never positional, so the reported df is meaningful.
+#   - Granger causality uses the *_NativeDiff columns (UN-shifted, true
+#     chronological calendar) to preserve exact causal integrity -- separate
+#     from the timezone-shifted ML features (firewall).
+#   - GARCH skew-t degrees of freedom are robustly extracted via
+#     metrics.extract_garch_dist_params(), never positionally.
 #   - The audit table reports the MEDIAN-performing seed's trajectory and, in
 #     the master report, Mean +/- Std aggregation across all seeds.
 #   - Expected Shortfall (McNeil-Frey) is included as a tail-shape dimension.
@@ -184,6 +185,9 @@ def plot_all_granger_spillover(master_df):
 
         clean_df = pd.DataFrame({"us": us_logdiff, "dom": in_logdiff}).dropna()
 
+        # NOTE (10.4): statsmodels' grangercausalitytests tests whether Col 1
+        # Granger-causes Col 0. So [["dom","us"]] = "US -> dom" (forward) and
+        # [["us","dom"]] = "dom -> US" (reverse). Do not reorder casually.
         # Forward: US VIX -> Domestic volatility
         res_fwd = grangercausalitytests(clean_df[["dom", "us"]], maxlag=5, verbose=False)
         # Reverse: Domestic -> US VIX

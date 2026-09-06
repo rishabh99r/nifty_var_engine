@@ -78,6 +78,9 @@ def run_empirical_proofs(df_path="master_df.csv", max_lag=5):
     print("  [NOTE] Granger p-values are only credible if ADF p<0.05 (stationary)")
     print("  and zero%/dup% are small (no calendar-misalignment artifact).\n")
 
+    # NOTE (10.4): statsmodels' grangercausalitytests tests whether Col 1
+    # Granger-causes Col 0. So [["dom","us"]] = "US -> dom" (forward) and
+    # [["us","dom"]] = "dom -> US" (reverse). Do not reorder casually.
     print(f"  -> Forward: US VIX Granger-causes {domestic_label}")
     res_forward = grangercausalitytests(clean_df[["dom", "us"]], maxlag=max_lag, verbose=False)
 

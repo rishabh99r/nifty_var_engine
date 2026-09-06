@@ -17,6 +17,7 @@ import yfinance as yf
 from arch import arch_model
 
 import config
+from metrics import extract_garch_dist_params
 
 warnings.filterwarnings("ignore")
 
@@ -211,8 +212,14 @@ def rolling_gjr_garch_pit(returns_series):
                     "nu": float(params.get("nu", 5.0)),
                     "lambda": float(params.get("lambda", 0.0)),
                 }
-                # Parametric 99% quantile boundary (Skew-T inverse CDF)
-                last_q_dist = float(current_res.model.distribution.ppf(0.01, params[-2:]))
+                # FIX 10.1: Robust Skew-T shape extraction for the VaR floor.
+                # Pass [nu, lambda] explicitly instead of fragile positional
+                # params[-2:] (which can silently corrupt the quantile if arch
+                # reorders its parameters).
+                shape = extract_garch_dist_params(current_res)
+                nu = shape["nu"] if not np.isnan(shape["nu"]) else 5.0
+                lam = shape["lambda"] if not np.isnan(shape["lambda"]) else 0.0
+                last_q_dist = float(current_res.model.distribution.ppf(0.01, [nu, lam]))
             except Exception:
                 # Retain previous parameters if numerical MLE fails
                 pass

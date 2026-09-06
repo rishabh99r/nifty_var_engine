@@ -54,8 +54,12 @@ def granger_series_from_panel(sub):
         dom = sub["India_VIX_NativeDiff"].astype(float)
         domestic_label = "Real India VIX (native calendar)"
     else:
+        # FIX 10.3: label the RV proxy with the asset's OWN ticker name, since
+        # each ticker's Domestic_RV_NativeProxy is that index's own rolling-vol
+        # proxy (NOT a single shared India-vol series).
         dom = sub["Domestic_RV_NativeProxy"].astype(float)
-        domestic_label = "Domestic_RV_Proxy (native calendar, realized-vol)"
+        ticker_name = sub["ticker"].iloc[0] if "ticker" in sub.columns else "Asset"
+        domestic_label = f"{ticker_name} own realized-vol proxy (native)"
 
     return us, dom, domestic_label
 
@@ -492,7 +496,14 @@ def evaluate_panel_metrics(panel_df, alpha=0.01):
         actual_dict[t] = sub["Log_Ret"].values if "Log_Ret" in sub.columns else sub["Actual"].values
         var_dict[t] = sub["TFT_VaR_99"].values
 
-    min_len = min(len(v) for v in actual_dict.values())
+    # FIX 10.5: assert all tickers have perfectly synchronized lengths. The
+    # trailing truncation below is only correct if the panel shares common end
+    # dates; if a future data revision leaves a ticker short at the END (not
+    # the start), the trailing truncation would silently misalign the panel.
+    lengths = [len(v) for v in actual_dict.values()]
+    assert len(set(lengths)) == 1, f"[FATAL] Panel date alignment broken. Lengths: {lengths}"
+
+    min_len = lengths[0]
     for t in tickers:
         actual_dict[t] = actual_dict[t][-min_len:]
         var_dict[t] = var_dict[t][-min_len:]

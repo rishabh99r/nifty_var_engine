@@ -408,3 +408,56 @@ All findings 8.1-8.7 have been fixed by separating native (chronological) column
 2. `python main.py` (retrain with unchanged ML features)
 3. `python proof.py` / `python generate_report_plots.py` — Granger now on true chronology; confirm the ADF/zero/dup diagnostics on the NATIVE columns.
 4. `python production_engine.py` — live path guarded.
+
+---
+
+# PART 10 — SECOND FULL-CODEBASE REVIEW (ROUND 10)
+
+Fresh line-by-line review after the Round 9 firewall. The ML/VaR path is now structurally clean; the remaining problems are consistency, robustness, and documentation gaps.
+
+## 10.1 MEDIUM: positional `params[-2:]` still used in the rolling-GARCH VaR floor ([`build_data.py`](build_data.py:215))
+The PIT filter computes `last_q_dist = ppf(0.01, params[-2:])` with positional indexing — the same fragile pattern that was removed from `production_engine.py` (8.6) and hardened in `extract_garch_dist_params`. If arch reorders its parameters (as the eta/nu saga demonstrated), the VaR floor silently corrupts. Fix: call `extract_garch_dist_params(res)` and pass `[nu, lambda]` explicitly. (This affects the GARCH_VaR_99 column that the whole backtest compares against, so it is more than cosmetic.)
+
+## 10.2 MEDIUM: stale methodology comment in [`generate_report_plots.py`](generate_report_plots.py:6-8)
+The file header still says "Granger causality uses the ACTUAL VIX series daily LOG-DIFFERENCES (US_VIX_Level / India_VIX_Level)" — but the code now uses the `*_NativeDiff` columns. The docstring is a factual error that a reviewer would catch immediately. Also the GARCH "extracted BY NAME (params['nu'])" note is only half-true (the news-impact fit uses `params.get`; the rolling filter does not).
+
+## 10.3 MEDIUM: `Domestic_RV_NativeProxy` is a per-ticker rolling statistic, but the master frame is built per-ticker and only *joined* on common dates
+In `build_data.generate_clean_production_data`, `Domestic_RV_NativeProxy = Log_Ret.rolling(5).std().diff()` is computed per ticker (correct — each index has its own vol proxy). But the ticker_dfs are then intersected on `Date`, so each ticker's `Domestic_RV_NativeProxy`/`Domestic_RV_Proxy` differ across tickers — as they should. No bug, but a subtle point worth a comment: the "domestic" proxy for the Granger test on NIFTYIT is *NIFTYIT's own* rolling vol, not a market-wide India vol. The `domestic_label` should ideally read "NIFTYIT own realized-vol proxy" rather than implying a single India vol series.
+
+## 10.4 LOW: `proof.py` and `generate_report_plots.py` Granger `p_rev` uses the reverse-frame ordering
+`res_rev = grangercausalitytests(clean_df[["us", "dom"]], ...)` tests "Domestic -> US" only if the DataFrame columns are ordered [y, x]. `grangercausalitytests(df[["us","dom"]])` treats column 0 as y. Since the frame is `["us","dom"]`, column 0 = `us`, so this tests "US -> US/dom jointly"? In statsmodels, `grangercausalitytests` with a 2-col frame tests whether col 1 Granger-causes col 0. So `[["dom","us"]]` = "US -> dom" (correct) and `[["us","dom"]]` = "dom -> US" (correct). No bug, but the naming is confusing; worth a comment.
+
+## 10.5 LOW: `evaluate_panel_metrics` truncates to `min_len` by taking the LAST `min_len` rows of each sorted-by-Date ticker
+This is correct only if all tickers share the same end date. Since the master frame was intersected on common dates, they do — but the code does not assert it. If a future data revision leaves a ticker shorter at the END (not the start), the trailing-truncation would misalign. Recommend asserting identical Date ranges per ticker.
+
+## 10.6 LOW: `explainability._build_eval_dataloader` test slice may re-encode beyond the last complete encoder window
+The test window is `time_idx >= max_t - BACKTEST_DAYS - encoder_len`. This is the same convention as the model, but `TimeSeriesDataSet.from_parameters` on a frame that ends at the true max will attempt to build samples for the last `encoder_len` rows whose *decoder* target doesn't exist — PTF handles this by `min_prediction_idx`, but only if `predict=True` is set. Here `predict` defaults to False, so the last `encoder_len` rows may produce samples with empty decoder targets. In the observed runs this did not error, but it is worth passing `predict=True` for the explanation dataloader or slicing to `<= max_t - encoder_len`.
+
+## 10.7 Summary
+- The **Granger firewall (9.x) is correct** and the ML path remains leakage-free.
+- Remaining work is low-to-medium risk: harden the rolling-GARCH `params[-2:]` (10.1), correct the stale docstring (10.2), add clarifying comments/labels (10.3-10.4), assert date alignment (10.5), and consider `predict=True` in the explanation loader (10.6).
+- These do not block publishability but should be cleaned before submission.
+
+---
+
+# PART 11 — ROUND 10 FIX LOG
+
+All findings 10.1-10.6 fixed.
+
+## 11.1 build_data.py (10.1)
+- `rolling_gjr_garch_pit` now imports and uses `extract_garch_dist_params(current_res)` and passes explicit `[nu, lam]` to `distribution.ppf(0.01, ...)` instead of fragile positional `params[-2:]`. The `GARCH_VaR_99` floor (the backtest baseline) is now robust to arch parameter ordering.
+
+## 11.2 metrics.py (10.3, 10.5)
+- `granger_series_from_panel` labels the RV-proxy fallback with the asset's own ticker: `"{ticker} own realized-vol proxy (native)"`, since each ticker's `Domestic_RV_NativeProxy` is that index's own rolling vol, not a shared India-vol series.
+- `evaluate_panel_metrics` asserts all tickers have synchronized lengths before the trailing truncation, so a future data revision can't silently misalign the panel.
+
+## 11.3 generate_report_plots.py + proof.py (10.2, 10.4)
+- Stale header corrected: Granger now described as using the `*_NativeDiff` (unshifted) columns; GARCH extraction described as robust via `extract_garch_dist_params`.
+- Added inline comments at both Granger call sites clarifying statsmodels' column-0-as-dependent semantics, so the forward/reverse frame ordering is not accidentally "fixed" into a bug.
+
+## 11.4 explainability.py (10.6)
+- `_build_eval_dataloader` now passes `predict=True` to `TimeSeriesDataSet.from_parameters`, preventing empty decoder targets at the tail of the evaluation window.
+
+## 11.5 State
+- All `.py` files parse cleanly. The ML/VaR path, Granger firewall, multi-seed aggregation, honest ES, and `Log_Ret_Feature` VSN attribution are all correct and consistent.
+- These were the final outstanding consistency/robustness items from Round 10; no further blockers identified at this review.
