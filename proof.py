@@ -18,7 +18,7 @@ from arch import arch_model
 from statsmodels.tsa.stattools import grangercausalitytests
 
 import config
-from metrics import extract_garch_dist_params, granger_series_from_panel
+from metrics import extract_garch_dist_params, granger_series_from_panel, granger_diagnostics, format_granger_diagnostics
 
 warnings.filterwarnings("ignore")
 
@@ -69,6 +69,13 @@ def run_empirical_proofs(df_path="master_df.csv", max_lag=5):
 
     clean_df = pd.DataFrame({"us": us_logdiff, "dom": dom_logdiff}).dropna()
     lags = [1, 2, 3, 5]
+
+    # Robustness diagnostics before trusting any near-zero p-value
+    diag = granger_diagnostics({"US VIX diff": clean_df["us"], "Domestic diff": clean_df["dom"]})
+    print("\n--- Granger Input Diagnostics (ADF stationarity + artifact check) ---")
+    print("  " + format_granger_diagnostics(diag))
+    print("  [NOTE] Granger p-values are only credible if ADF p<0.05 (stationary)")
+    print("  and zero%/dup% are small (no calendar-misalignment artifact).\n")
 
     print(f"  -> Forward: US VIX Granger-causes {domestic_label}")
     res_forward = grangercausalitytests(clean_df[["dom", "us"]], maxlag=max_lag, verbose=False)

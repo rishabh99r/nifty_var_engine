@@ -54,6 +54,20 @@ INDIA_VIX_SYMBOL = "^INDIAVIX"
 MIN_INDIA_VIX_OBS = 200
 
 # ----------------------------------------------------------------------------
+# TIMEZONE-ALIGNED LAG (anti look-ahead bias)
+# ----------------------------------------------------------------------------
+# The US VIX closes at 16:00 EST = 01:30 IST the NEXT calendar day. When the
+# Indian market closes at 15:30 IST on day D, the US session for day D has NOT
+# opened yet. Therefore any US-market feature must be known by end-of-day D.
+# Shifting by 2 calendar rows guarantees the value used at the forecast step
+# reflects ONLY information available at India's close on D:
+#   - shift(1) exposes US[D]/US[D-1], but US[D] closes at 01:30 IST on D+1,
+#     AFTER the Indian close on D  -> look-ahead (FATAL).
+#   - shift(2) exposes US[D-1]/US[D-2], fully known by India's close on D.
+US_VIX_SHIFT = 2
+INDIA_VIX_SHIFT = 1   # India VIX closes 15:30 IST on day D, known at close of D
+
+# ----------------------------------------------------------------------------
 # ROLLING GJR-GARCH(1,1) SKEW-T PIT FILTER
 # ----------------------------------------------------------------------------
 LOOKBACK_DAYS = 1000      # estimation window for each parameter refit

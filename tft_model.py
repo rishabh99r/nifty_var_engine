@@ -10,8 +10,10 @@
 #   model == the deployed model.
 #
 # Leakage controls:
-#   - Log_Ret is ONLY the target; it is NOT included in time_varying_unknown_reals
-#     (autoregressive information comes exclusively from Log_Ret_Lag1/Lag2).
+#   - Log_Ret is ONLY the target; it is NOT included in time_varying_unknown_reals.
+#     The TFT encoder natively processes the observed target sequence through its
+#     temporal attention mechanism, so NO explicit Log_Ret lag columns are used
+#     (they would duplicate encoder inputs).
 #   - Temporal splits keep validation/test strictly after training.
 # =============================================================================
 import os
@@ -69,11 +71,11 @@ def build_datasets(df, encoder_length=None, backtest_days=None, val_days=None):
     ]
     known_reals = [col for col in candidate_known if col in df.columns]
 
-    # Unknown reals (contemporaneous with target). Deliberately EXCLUDES
-    # Log_Ret itself; autoregressive info comes from the explicit lags.
+    # Unknown reals (contemporaneous with target). Deliberately EXCLUDES both
+    # Log_Ret (the target) and any explicit Log_Ret lag columns -- the TFT
+    # encoder already observes the target sequence natively through its
+    # temporal attention mechanism, so explicit lags would be duplication.
     candidate_unknown = [
-        "Log_Ret_Lag1",
-        "Log_Ret_Lag2",
         "GK_Vol",
         "GARCH_resid",
     ]

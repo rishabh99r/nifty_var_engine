@@ -234,3 +234,33 @@ The repositioned thesis is materially better, but two claims must be toned down:
 - Re-run `build_data.py` (regenerates clean native-calendar `*_Diff` columns) → `main.py` → `generate_report_plots.py`.
 - Confirm: `nu` is now populated; Granger p-values are no longer 0.0000 at every cell; ES t-stat is suppressed for n<5; the domestic-series label appears in the report.
 - For the paper, still needed: multi-level VaR backtests (95/97.5/99.5), a PIT/density evaluation, and reproducible committed data artifacts.
+
+---
+
+# PART 4 — TIMEZONE LOOKAHEAD, LAG DUPLICATION, AND GRANGER ROBUSTNESS (ROUND 4 REVIEW)
+
+## 4.1 Verdict on the five proposed fixes
+
+| # | Fix proposed | Verdict | Action taken |
+|---|---|---|---|
+| 1 | US_VIX_Diff timezone lookahead (shift by 2 or move to unknown) | **CORRECT — genuine leak.** Confirmed by tracing alignment. | Shift US features by 2 (keeps them known reals; avoids teacher-forcing train/inference mismatch from unknown-reals). |
+| 2 | Remove Log_Ret_Lag1/Lag2 duplication | **CORRECT.** TFT encoder processes the target sequence natively; explicit lags are literal copies. | Removed from data builder, feature list, and explainability categories. |
+| 3 | NIFTY IT "Green Zone falsehood" | **DISCREPANCY — must not be fabricated.** Cited numbers (12 breaches, Kupiec p=0.0077) contradict the Colab output actually produced (7 breaches, Kupiec p=0.3966). Per-asset honest reporting is already built in. | No narrative fabricated; per-asset table retained. Confirm the correct numbers before writing. |
+| 4 | ES tail understatement ("not safe for production") | **Already fixed** in the honest-ES refactor (descriptive-only below n=5, `es_mean_resid` sign exposed). | Retract the "safe for unconstrained production" claim; EVT overlay is the honest recommendation. |
+| 5 | Granger p=0.0000 suspicious (ADF + artifact check) | **VALID** — a reviewer red flag. | Added `granger_diagnostics()` (ADF + zero%/dup% checks) and report it. |
+
+## 4.2 Fix 1 — timezone lookahead (implemented)
+- `US_VIX_SHIFT = 2`, `INDIA_VIX_SHIFT = 1` added to config with full timezone reasoning.
+- `build_macro_features` now lags US level + US log-diff by 2 rows after native-calendar differencing; India VIX (same zone) lagged by 1. This guarantees the value at forecast step t+1 reflects only information known at India's close on t.
+
+## 4.3 Fix 2 — lag-column duplication (implemented)
+- Removed `Log_Ret_Lag1`/`Log_Ret_Lag2` from the data builder, from `time_varying_unknown_reals`, and from the VSN category map. The encoder now relies solely on its native target-sequence processing.
+
+## 4.4 Fix 5 — Granger robustness (implemented)
+- Added `granger_diagnostics()` in metrics.py: per-series **ADF stationarity p**, **zero-fraction**, and **duplicate-fraction**. Wired into `proof.py` (console report) and `generate_report_plots.py` (embedded in the master report with a "how to read" note). Near-zero p-values are now only interpretable if the series are stationary and artifact-free.
+
+## 4.5 Required re-run
+1. `python build_data.py` (regenerates timezone-corrected US features; drops lag columns)
+2. `python main.py` (re-trains; expect VSN weights to de-fragment once lags are removed)
+3. `python generate_report_plots.py`
+4. Verify: Granger diagnostics printed; confirm whether NIFTY IT is truly at 7 or 12 breaches and use THAT number in the narrative.

@@ -22,7 +22,15 @@ from arch import arch_model
 from statsmodels.tsa.stattools import grangercausalitytests
 
 import config
-from metrics import calculate_metrics, evaluate_panel_metrics, extract_garch_dist_params, granger_series_from_panel
+from metrics import (
+    calculate_metrics,
+    evaluate_panel_metrics,
+    extract_garch_dist_params,
+    granger_series_from_panel,
+    granger_diagnostics,
+    _fmt_p,
+    _fmt_pct,
+)
 
 warnings.filterwarnings("ignore")
 plt.style.use("seaborn-v0_8-whitegrid")
@@ -183,7 +191,13 @@ def plot_all_granger_spillover(master_df):
 
         p_fwd = [res_fwd[l][0]["ssr_chi2test"][1] for l in lags]
         p_rev = [res_rev[l][0]["ssr_chi2test"][1] for l in lags]
-        granger_results[sym] = {"p_forward": p_fwd, "p_reverse": p_rev, "domestic_label": domestic_label}
+        diag = granger_diagnostics({"US VIX diff": clean_df["us"], "Domestic diff": clean_df["dom"]})
+        granger_results[sym] = {
+            "p_forward": p_fwd,
+            "p_reverse": p_rev,
+            "domestic_label": domestic_label,
+            "diag": diag,
+        }
 
         x = np.arange(len(lags))
         width = 0.35
@@ -375,6 +389,19 @@ def export_complete_test_suite(panel_df, garch_params, granger_params, master_df
             dom_label = g.get("domestic_label", "")
             f.write(f"  [{sym}] 1D Lag p={g['p_forward'][0]:.4f} | 2D Lag p={g['p_forward'][1]:.4f} | 5D Lag p={g['p_forward'][3]:.4f}"
                     f"   (domestic: {dom_label})\n")
+        f.write("\nGRANGER INPUT DIAGNOSTICS (ADF stationarity + calendar-artifact check):\n")
+        for sym, g in granger_params.items():
+            diag = g.get("diag", {})
+            us_d = diag.get("US VIX diff", {})
+            dom_d = diag.get("Domestic diff", {})
+            f.write(f"  [{sym}] US VIX: ADF p={_fmt_p(us_d.get('adf_p', np.nan))}, "
+                    f"zero%={_fmt_pct(us_d.get('zero_frac', np.nan))}, "
+                    f"dup%={_fmt_pct(us_d.get('dup_frac', np.nan))} | "
+                    f"Domestic: ADF p={_fmt_p(dom_d.get('adf_p', np.nan))}, "
+                    f"zero%={_fmt_pct(dom_d.get('zero_frac', np.nan))}, "
+                    f"dup%={_fmt_pct(dom_d.get('dup_frac', np.nan))}\n")
+        f.write("  [READ] Near-zero Granger p is only credible if ADF p<0.05 (stationary)\n")
+        f.write("  and zero%/dup% are small (no calendar-misalignment artifact).\n")
         f.write("-" * 80 + "\n\n")
 
         # Across-seed aggregation (if the multi-seed report exists)

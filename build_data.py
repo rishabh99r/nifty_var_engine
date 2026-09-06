@@ -104,33 +104,52 @@ def fetch_vix_pair():
 def build_macro_features(us_vix_close, india_vix_close, ticker_index):
     """
     Builds macro feature columns ALIGNED to the ticker trading calendar
-    (`ticker_index`).
+    (`ticker_index`), with timezone-correct lags (anti look-ahead bias).
 
-    CRITICAL anti-artifact rule: log-differences are computed on the NATIVE
-    VIX calendar (only genuinely observed days), then the resulting daily
-    changes are reindexed onto the ticker calendar with ffill. Differencing an
-    ffill()-ed LEVEL on the ticker calendar would create artificial zero
-    returns on any day where a VIX value was carried forward across a US or
-    India market closure -- deflating the variance of the feature and inflating
-    Granger-causality significance. We avoid that entirely here.
+    TWO rules are enforced:
+
+    1. ANTI-ARTIFACT (Granger): log-differences are computed on the NATIVE
+       VIX calendar (only genuinely observed days), then the resulting daily
+       changes are reindexed onto the ticker calendar with ffill. Differencing
+       an ffill()-ed LEVEL on the ticker calendar would create artificial zero
+       returns on any market-calendar mismatch day, deflating variance and
+       inflating Granger significance. We avoid that entirely here.
+
+    2. ANTI-LOOKAHEAD (timezone): The US VIX closes at 01:30 IST on the NEXT
+       calendar day. The Indian market closes at 15:30 IST on day D, BEFORE
+       the US session for day D even opens. So the value a model may use to
+       forecast India's day-D+1 VaR (generated at India's close on D) must
+       reflect only information known by end-of-day D. We therefore lag the
+       US features by config.US_VIX_SHIFT (=2) calendar rows after reindexing:
+       US_VIX at row D holds US[D-1], US_VIX_Diff at row D holds
+       log(US[D-1]/US[D-2]) -- both fully known by India's close on D.
+       India VIX is same-zone (closes 15:30 IST on D) so config.INDIA_VIX_SHIFT
+       (=1) is sufficient.
     """
+    us_sh = config.US_VIX_SHIFT
+    in_sh = config.INDIA_VIX_SHIFT
+
     # Native-calendar daily log-changes (non-overlapping, no ffill zeros)
     us_log_change = np.log(us_vix_close).diff().dropna()
-
     # Reindex the CHANGES onto the ticker calendar (ffill of changes is safe:
     # carry forward the last realized change, never invent a zero change).
+    us_change_reindexed = us_log_change.reindex(ticker_index).ffill()
+    us_level_reindexed = us_vix_close.reindex(ticker_index).ffill()
+
     macro_df = pd.DataFrame(index=ticker_index)
-    macro_df["US_VIX"] = us_vix_close.reindex(ticker_index).ffill().shift(1)
-    macro_df["US_VIX_Diff"] = us_log_change.reindex(ticker_index).ffill().shift(1)
-    # Native level (ffilled onto the ticker calendar) is retained only as a
-    # reference/level feature for the model, NOT for differencing.
-    macro_df["US_VIX_Level"] = us_vix_close.reindex(ticker_index).ffill()
+    macro_df["US_VIX"] = us_level_reindexed.shift(us_sh)
+    macro_df["US_VIX_Diff"] = us_change_reindexed.shift(us_sh)
+    # Native level, timezone-shifted as well (reference/level feature).
+    macro_df["US_VIX_Level"] = us_level_reindexed.shift(us_sh)
 
     if india_vix_close is not None:
         in_log_change = np.log(india_vix_close).diff().dropna()
-        macro_df["India_VIX"] = india_vix_close.reindex(ticker_index).ffill().shift(1)
-        macro_df["India_VIX_Diff"] = in_log_change.reindex(ticker_index).ffill().shift(1)
-        macro_df["India_VIX_Level"] = india_vix_close.reindex(ticker_index).ffill()
+        in_change_reindexed = in_log_change.reindex(ticker_index).ffill()
+        in_level_reindexed = india_vix_close.reindex(ticker_index).ffill()
+
+        macro_df["India_VIX"] = in_level_reindexed.shift(in_sh)
+        macro_df["India_VIX_Diff"] = in_change_reindexed.shift(in_sh)
+        macro_df["India_VIX_Level"] = in_level_reindexed.shift(in_sh)
         macro_df["has_real_india_vix"] = True
     else:
         macro_df["has_real_india_vix"] = False
@@ -254,8 +273,10 @@ def generate_clean_production_data():
         df["GARCH_resid"] = resid
         df["GARCH_VaR_99"] = var_99
 
-        df["Log_Ret_Lag1"] = df["Log_Ret"].shift(1)
-        df["Log_Ret_Lag2"] = df["Log_Ret"].shift(2)
+        # NOTE: Explicit Log_Ret_Lag1/Lag2 columns are DELIBERATELY NOT created.
+        # The TFT encoder natively receives the observed target sequence
+        # (Log_Ret up to time t) via encoder_target, so manual lag columns would
+        # duplicate data the network already sees through its temporal encoder.
 
         # Macro features aligned to the ticker trading calendar
         macro_df = build_macro_features(us_vix_close, india_vix_close, df.index)

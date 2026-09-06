@@ -108,8 +108,6 @@ def run_explainability():
     # 7. Write Dedicated Interpretability Report
     report_path = os.path.join(OUTPUT_DIR, "tft_explainability_report.txt")
     categories = {
-        "Log_Ret_Lag1": "Autoregressive Shock",
-        "Log_Ret_Lag2": "Autoregressive Shock",
         "GK_Vol": "Intraday Range Volatility",
         "GARCH_sigma": "Econometric Volatility Prior",
         "GARCH_resid": "Standardized Innovation",

@@ -57,6 +57,83 @@ def granger_series_from_panel(sub):
     return us, dom, domestic_label
 
 
+def granger_diagnostics(series_dict):
+    """
+    Runs robustness diagnostics on the series used in Granger-causality tests.
+    These are the checks a skeptical reviewer will demand before accepting
+    p-values near 0.0000 as real spillover rather than an alignment artifact:
+
+      1. ADF stationarity test on each series (Granger requires stationary
+         inputs; differencing US VIX log-levels is intended to deliver this).
+      2. Zero-fraction: share of exact-0 values. A high zero-fraction from
+         calendar misalignment would deflate variance and inflate significance.
+      3. Duplicate-fraction: share of values equal to their predecessor
+         (repeated carries / unchanged days), the residue of ffill artifacts.
+
+    `series_dict` maps a label -> pd.Series (already cleaned, NaNs dropped).
+    Returns {label: {'adf_stat','adf_p','zero_frac','dup_frac','n'}}.
+    """
+    from statsmodels.tsa.stattools import adfuller  # lazy import (Colab has it)
+
+    out = {}
+    for label, s in series_dict.items():
+        s = pd.Series(s).dropna().astype(float)
+        n = len(s)
+        zero_frac = float(np.mean(s == 0.0)) if n else np.nan
+        dup_frac = float(np.mean(s.iloc[1:].values == s.iloc[:-1].values)) if n > 1 else np.nan
+
+        adf_stat = adf_p = np.nan
+        if n > 10:
+            try:
+                adf_res = adfuller(s, autolag="AIC")
+                adf_stat = float(adf_res[0])
+                adf_p = float(adf_res[1])
+            except Exception:
+                pass
+
+        out[label] = {
+            "n": n,
+            "adf_stat": adf_stat,
+            "adf_p": adf_p,
+            "zero_frac": zero_frac,
+            "dup_frac": dup_frac,
+        }
+    return out
+
+
+def _fmt_pct(v, mult=100.0, decimals=2):
+    """NaN-safe percentage formatter."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "N/A"
+    if np.isnan(v):
+        return "N/A"
+    return f"{mult * v:.{decimals}f}%"
+
+
+def _fmt_p(v, decimals=4):
+    """NaN-safe p-value formatter."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "N/A"
+    if np.isnan(v):
+        return "N/A"
+    return f"{v:.{decimals}f}"
+
+
+def format_granger_diagnostics(diag):
+    """Human-readable one-liner for a diagnostics dict."""
+    lines = []
+    for label, d in diag.items():
+        lines.append(
+            f"{label}: n={d['n']}, ADF p={_fmt_p(d['adf_p'])}, "
+            f"zero%={_fmt_pct(d['zero_frac'])}, dup%={_fmt_pct(d['dup_frac'])}"
+        )
+    return " | ".join(lines)
+
+
 def extract_garch_dist_params(res):
     """
     Robustly extracts the shape parameters (tail df, skew) from a fitted arch
