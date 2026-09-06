@@ -24,8 +24,10 @@ def quantile_loss(y_true, y_pred, q=0.01):
     return pinball_loss(y_true, y_pred, q)
 
 
-# Aliases used by arch-family distributions for the tail degrees of freedom
-_DF_ALIASES = ("nu", "df", "v", "shape", "tail")
+# Aliases used by arch-family distributions for the tail degrees of freedom.
+# 'eta' is included because some arch versions/configurations name the skew-t
+# degrees-of-freedom parameter 'eta' rather than 'nu'.
+_DF_ALIASES = ("nu", "df", "v", "shape", "tail", "eta")
 _SKEW_ALIASES = ("lambda", "skew", "gamma")
 
 
@@ -34,24 +36,31 @@ def granger_series_from_panel(sub):
     Builds clean, non-artifactual (us, domestic) series for Granger causality
     from one ticker's panel slice.
 
-    Uses the *_Diff columns which were computed on the NATIVE VIX calendar in
-    build_data.build_macro_features (never by differencing an ffill()-ed
-    level), so no artificial zero returns from market-calendar mismatches are
-    introduced. When the real India VIX is unavailable, the domestic series
-    falls back to the explicitly-labelled Domestic_RV_Proxy (lagged
-    first-difference of a 5-day realized-vol proxy) and the caller must
-    disclose that the "spillover" is relative to a proxy, not an options-
-    implied index.
+    IMPORTANT (timezone alignment): the *_Diff columns are stored in
+    build_data.build_macro_features with ML-timezone lags applied
+    (US_VIX_SHIFT=2, INDIA_VIX_SHIFT=1) so the forecasting pipeline is free of
+    look-ahead bias. Granger causality, however, is a DESCRIPTIVE IN-SAMPLE
+    lead-lag test that regresses Y_t on lags of X -- it does not forecast.
+    To evaluate the true chronological lead-lag structure we therefore UN-SHIFT
+    each series by its own lag (`shift(-lag)`), restoring the exact calendar
+    alignment of the underlying market closes. This makes the standard Granger
+    mapping (X_{t-k} -> Y_t) reflect genuine market chronology.
+
+    The native-calendar differencing guarantee from build_data still holds (no
+    artificial zeros from ffill), and the Domestic_RV_Proxy fallback (built as
+    rv.diff().shift(1)) is un-shifted by -1 to restore its true calendar value.
 
     Returns (us_series, dom_series, domestic_label).
     """
-    us = sub["US_VIX_Diff"].astype(float)
+    # Undo the ML timezone shift to restore exact calendar alignment
+    us = sub["US_VIX_Diff"].astype(float).shift(-config.US_VIX_SHIFT)
 
     if "India_VIX_Diff" in sub.columns and sub["India_VIX_Diff"].notna().sum() > 50:
-        dom = sub["India_VIX_Diff"].astype(float)
+        dom = sub["India_VIX_Diff"].astype(float).shift(-config.INDIA_VIX_SHIFT)
         domestic_label = "Real India VIX (log-diff)"
     else:
-        dom = sub["Domestic_RV_Proxy"].astype(float)
+        # Domestic_RV_Proxy is built as rv.diff().shift(1); un-shift by -1
+        dom = sub["Domestic_RV_Proxy"].astype(float).shift(-1)
         domestic_label = "Domestic_RV_Proxy (realized-vol proxy)"
 
     return us, dom, domestic_label

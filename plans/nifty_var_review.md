@@ -312,3 +312,21 @@ The proposal is **sound and implemented**. Rationale: in PyTorch Forecasting, li
 2. `python main.py`
 3. `python explainability.py` (expect `Log_Ret_Feature` to appear in the VSN table with a meaningful, dominant share)
 4. `python generate_report_plots.py`
+
+---
+
+# PART 7 — eta ALIAS + GRANGER UN-SHIFTING (ROUND 7)
+
+## 7.1 Verdict
+Both fixes are sound and implemented in [`metrics.py`](metrics.py):
+
+1. **`eta` alias**: Some arch versions/configurations name the skew-t degrees-of-freedom parameter `"eta"` rather than `"nu"` — which explains the `N/A` on Colab. Added `"eta"` to `_DF_ALIASES`.
+2. **Granger un-shifting**: Granger causality is a DESCRIPTIVE in-sample lead-lag test (regress Y_t on lags of X), not a forecast evaluation. The ML pipeline's timezone shifts (US_VIX_SHIFT=2, INDIA_VIX_SHIFT=1) are leakage-safe for forecasting but warp the *relative* chronology for the econometric test. Un-shifting each series by its own lag (`shift(-US_VIX_SHIFT)`, `shift(-INDIA_VIX_SHIFT)`, `shift(-1)` for the RV proxy) restores true calendar alignment so the standard Granger mapping (X_{t-k} -> Y_t) reflects genuine market chronology. The ML feature columns are unchanged; only the econometric-diagnostic read-out is un-shifted.
+
+## 7.2 Changes
+- `_DF_ALIASES = ("nu", "df", "v", "shape", "tail", "eta")`
+- `granger_series_from_panel`: US and (real) India VIX diffs un-shifted by their config lags; `Domestic_RV_Proxy` un-shifted by −1 (it was built as `rv.diff().shift(1)`). Docstring explains the descriptive-vs-forecasting distinction.
+
+## 7.3 Required verification
+1. `python proof.py` — `Nu (Tail df)` should print a numeric value (not N/A).
+2. `python generate_report_plots.py` — the Granger plot/report should reflect true chronological lead-lag; the ADF + zero/dup diagnostics remain printed for reviewer confidence.
