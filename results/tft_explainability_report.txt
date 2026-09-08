@@ -1,0 +1,36 @@
+================================================================================
+      TFT INTERPRETABILITY: CROSS-SEED AGGREGATION (Mean +/- Std)
+================================================================================
+Seeds aggregated: [42, 123, 777]
+
+1. VARIABLE SELECTION NETWORK (VSN) FEATURE ATTRIBUTION
+--------------------------------------------------------------------------------
+Feature                | Importance (% mean+/-std)  | Category
+--------------------------------------------------------------------------------
+GARCH_sigma            |      24.25 +/-  4.55% | Econometric Volatility Prior
+Log_Ret_Feature        |      21.30 +/-  2.76% | Autoregressive Target History
+US_VIX_Diff            |      20.44 +/-  4.48% | Cross-Border Macro Spillover (lagged 2)
+GK_Vol                 |      14.70 +/-  9.25% | Intraday Range Volatility
+time_idx               |      10.29 +/-  9.41% | Panel Timeline
+India_VIX_Diff         |       5.06 +/-  1.60% | Domestic Volatility (India VIX or RV proxy)
+relative_time_idx      |       3.96 +/-  2.22% | Temporal Indexing
+
+
+2. MULTI-HEAD TEMPORAL ATTENTION (top-10 lags)
+--------------------------------------------------------------------------------
+Lookback Lag         | Attention Weight (% mean+/-std)
+--------------------------------------------------------------------------------
+Lag  1 day(s) prior        |     4.80 +/-  0.16%
+Lag  2 day(s) prior        |     4.81 +/-  0.16%
+Lag  3 day(s) prior        |     4.80 +/-  0.18%
+Lag  4 day(s) prior        |     4.77 +/-  0.15%
+Lag  5 day(s) prior        |     4.75 +/-  0.13%
+Lag  6 day(s) prior        |     4.73 +/-  0.12%
+Lag  7 day(s) prior        |     4.76 +/-  0.14%
+Lag  8 day(s) prior        |     4.71 +/-  0.11%
+Lag  9 day(s) prior        |     4.77 +/-  0.17%
+Lag 10 day(s) prior        |     4.75 +/-  0.15%
+================================================================================
+NOTE: Low cross-seed std indicates the network's attention
+structure is a robust structural invariant, not an artifact of
+a single random initialization.
