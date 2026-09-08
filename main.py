@@ -45,12 +45,14 @@ def _save_deployment_state(state):
         json.dump(state, f, indent=2)
 
 
-def _record_deployment_retrain(median_seed):
+def _record_deployment_retrain(seed):
     """Record that a TFT retrain happened now (used by deployment.py cadence).
 
     Stores the current trading-day index (from the freshly built master_df) as
-    the retrain anchor, plus the median seed and date. deployment.py compares
-    the current time_idx against this anchor to decide when to retrain next.
+    the retrain anchor and the date. deployment.py compares the current
+    time_idx against this anchor to decide when to retrain next. The canonical
+    forecast is the 3-seed ENSEMBLE (not a single seed); 'seed' is recorded
+    for provenance only.
     """
     state = _load_deployment_state()
     try:
@@ -59,7 +61,8 @@ def _record_deployment_retrain(median_seed):
     except Exception:
         max_idx = state.get("last_tft_retrain_idx", 0)
     state["last_tft_retrain_idx"] = max_idx
-    state["median_seed"] = int(median_seed)
+    state["retrain_provenance_seed"] = int(seed)
+    state["ensemble"] = True
     state["last_tft_retrain_date"] = datetime.date.today().isoformat()
     _save_deployment_state(state)
 
@@ -73,25 +76,6 @@ def _fmt_val(v, decimals=4):
     if v != v:  # NaN check (NaN != NaN)
         return "N/A"
     return f"{v:.{decimals}f}"
-
-
-def _rank_seeds_by_pinball(seed_pred_files):
-    """
-    Ranks seeds by the NIFTY50 mean pinball loss on the out-of-sample horizon.
-    Returns the seed with the MEDIAN performance (neither best nor worst).
-    """
-    from metrics import pinball_loss
-
-    scores = {}
-    for seed, path in seed_pred_files.items():
-        nifty = pd.read_csv(path)
-        actual = nifty["Log_Ret"].values
-        var = nifty["TFT_VaR_99"].values
-        scores[seed] = float(np.mean(pinball_loss(actual, var, q=0.01)))
-
-    ordered = sorted(scores.items(), key=lambda kv: kv[1])
-    median_seed = ordered[len(ordered) // 2][0]
-    return median_seed, scores
 
 
 def main():
@@ -145,14 +129,16 @@ def main():
         print(f"  -> 99% VaR Breaches:    {nifty_metrics['breaches']} (Basel {nifty_metrics['basel_zone']} Zone)")
         print(f"  -> Kupiec POF p-value:  {nifty_metrics['kupiec_p_value']:.4f}")
         print(f"  -> Christoffersen Ind:  {nifty_metrics['christ_p_value']:.4f}")
-        print(f"  -> Diebold-Mariano Stat: {nifty_metrics['dm_stat']:.4f} (p-value: {nifty_metrics['dm_p_value']:.4f})")
-        print(f"  -> McNeil-Frey ES t-stat: {nifty_metrics['es_t_stat']:.4f} (p-value: {nifty_metrics['es_p_value']:.4f})")
+        print(f"  -> Diebold-Mariano Stat: {nifty_metrics['dm_stat']:.4f} (p-value: {nifty_metrics['dm_p_value']:.4f}) "
+              f"[d_t = L_TFT - L_GARCH; negative = TFT lower loss]")
+        print(f"  -> Tail breach depth: {nifty_metrics['es_n_exceed']} breaches; "
+              f"mean std resid z = {nifty_metrics['es_mean_resid']:.3f}")
 
     # ------------------------------------------------------------------
-    # Aggregate across seeds (honest statistical disclosure)
+    # Multi-seed aggregation (per-asset Mean +/- Std) for disclosure
     # ------------------------------------------------------------------
     print("\n=== MULTI-SEED AGGREGATION (Mean +/- Std) ===")
-    agg_rows = aggregate_seed_metrics(all_seed_metrics)
+    agg_rows = aggregate_seed_metrics(all_seed_metrics)  # NIFTY50-focused per-seed summary
     report_lines = []
     report_lines.append("=" * 80)
     report_lines.append("      MULTI-SEED VALIDATION REPORT (MEAN +/- STD ACROSS SEEDS)")
@@ -161,35 +147,86 @@ def main():
     report_lines.append("")
     report_lines.append(f"{'Metric':<24}{'Mean':>16}{'Std':>16}")
     report_lines.append("-" * 60)
-    # FIX 14.6: NaN-safe formatting (module-level _fmt_val) so non-testable
-    # metrics (e.g. ES t-stat when no seed is testable) render as N/A not nan.
     for row in agg_rows:
         report_lines.append(
             f"{row['metric']:<24}{_fmt_val(row['mean']):>16}{_fmt_val(row['std']):>16}   values={row['values']}"
         )
 
-    # Select median-performing seed for canonical report artifacts
-    median_seed, scores = _rank_seeds_by_pinball(seed_pred_files)
+    # ------------------------------------------------------------------
+    # ENSEMBLE (Round 23): the canonical forecast is the pre-determined mean
+    # of the q={0.01,0.50,0.99} quantile columns across seeds, computed per
+    # (ticker, time_idx). This is fixed BEFORE looking at test outcomes and is
+    # NOT a test-selected seed.
+    # ------------------------------------------------------------------
+    print("\n=== BUILDING 3-SEED QUANTILE ENSEMBLE (pre-determined rule) ===")
+    seed_panels = []
+    for seed in config.VALIDATION_SEEDS:
+        sp = pd.read_csv(seed_panel_files[seed])
+        sp["Date"] = pd.to_datetime(sp["Date"])
+        seed_panels.append(sp)
+
+    # Align on a common key and average the quantile columns per (ticker, time_idx)
+    q_cols = {
+        "TFT_VaR_99_Raw": "TFT_VaR_99_Raw",
+        "TFT_Median": "TFT_Median",
+        "TFT_VaR_Upside": "TFT_VaR_Upside",
+    }
+    ensemble_parts = []
+    for sp in seed_panels:
+        keep = ["time_idx", "ticker", "Date", "Log_Ret", "GARCH_VaR_99", "GARCH_sigma"] + list(q_cols)
+        ensemble_parts.append(sp[keep].copy())
+
+    # Merge on (time_idx, ticker) with suffixes per seed
+    merged = ensemble_parts[0]
+    for i, sp in enumerate(ensemble_parts[1:], start=1):
+        merged = merged.merge(
+            sp[["time_idx", "ticker"] + list(q_cols)],
+            on=["time_idx", "ticker"],
+            suffixes=("", f"_s{i}"),
+            how="inner",
+        )
+
+    # Average the q-columns across the seed-suffixed copies
+    for col in q_cols:
+        cols_to_avg = [col] + [f"{col}_s{i}" for i in range(1, len(ensemble_parts))]
+        merged[col] = merged[cols_to_avg].mean(axis=1)
+
+    ens_panel = merged[["time_idx", "ticker", "Date", "Log_Ret", "GARCH_VaR_99", "GARCH_sigma",
+                        "TFT_VaR_99_Raw", "TFT_Median", "TFT_VaR_Upside"]].copy()
+    ens_panel["TFT_VaR_99"] = ens_panel["TFT_VaR_99_Raw"]
+    ens_panel["Date"] = ens_panel["Date"].dt.strftime("%Y-%m-%d")
+    ens_panel = ens_panel.sort_values(by=["Date", "ticker"]).reset_index(drop=True)
+
+    ens_panel.to_csv("test_tft_predictions_panel.csv", index=False)
+    nifty_ens = ens_panel[ens_panel["ticker"] == "NIFTY50"].copy()
+    nifty_ens.to_csv("test_tft_predictions.csv", index=False)
+    print(f"[CANONICAL] 3-seed ENSEMBLE panel written to test_tft_predictions_panel.csv "
+          f"({len(ens_panel)} rows across {ens_panel['ticker'].nunique()} tickers)")
+
+    # Ensemble metrics per asset (computed once on the predetermined ensemble)
+    ensemble_metrics = {}
+    for t in ens_panel["ticker"].unique():
+        sub = ens_panel[ens_panel["ticker"] == t].copy()
+        ensemble_metrics[t] = calculate_metrics(sub)
     report_lines.append("")
-    report_lines.append(f"Median-performing seed (by NIFTY50 pinball loss): {median_seed}")
-    report_lines.append(f"Pinball loss per seed: {scores}")
-    report_lines.append("NOTE: The canonical report tables show the MEDIAN seed trajectory, not a cherry-picked best seed.")
+    report_lines.append("ENSEMBLE (mean-of-seeds q0.01) per-asset breach counts:")
+    for t, m in ensemble_metrics.items():
+        report_lines.append(f"  {t}: {m['breaches']} breaches / {m['total_obs']} "
+                            f"(Basel {m['basel_zone']}), Kupiec p={m['kupiec_p_value']:.4f}, "
+                            f"DM={m['dm_stat']:.4f} (p={m['dm_p_value']:.4f})")
+    report_lines.append("NOTE: canonical tables use the pre-determined 3-seed ensemble, "
+                        "never a test-selected seed.")
+    report_lines.append("")
 
     with open("multi_seed_validation_report.txt", "w") as f:
         f.write("\n".join(report_lines))
 
-    # Canonical artifacts = median seed, so downstream report scripts
-    # (generate_report_plots.py) can read a single unambiguous file.
-    shutil.copy(seed_pred_files[median_seed], "test_tft_predictions.csv")
-    shutil.copy(seed_panel_files[median_seed], "test_tft_predictions_panel.csv")
-    print(f"[CANONICAL] Median seed {median_seed} promoted to test_tft_predictions*.csv")
-
-    # Persist the median-seed and the retrain timestamp for the production
-    # deployment scheduler (deployment.py reads these to select the checkpoint
-    # deterministically and to know when the TFT was last retrained).
+    # Persist deployment retrain anchor (ensemble version: no single median seed).
+    # Keep MEDIAN_SEED_FILE for backward compat but note it is not used for the
+    # canonical forecast.
     with open(config.MEDIAN_SEED_FILE, "w") as f:
-        f.write(str(median_seed))
-    _record_deployment_retrain(median_seed)
+        f.write("ENSEMBLE")
+    _record_deployment_retrain(seed=config.VALIDATION_SEEDS[0])
 
     # Persist to Google Drive if mounted
     if os.path.exists("/content/drive/MyDrive"):

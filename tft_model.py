@@ -203,6 +203,26 @@ def train_tft(df, hidden_size=None, dropout=None, learning_rate=None, seed=42,
     return tft, trainer, best_score, val_dataloader, test_dataloader
 
 
+def select_seed_checkpoints(seeds=None):
+    """
+    Returns the list of available checkpoint paths for the validation seeds
+    (used by the ensemble deployment path). Only seeds with a checkpoint are
+    returned.
+    """
+    import glob
+
+    if seeds is None:
+        seeds = config.VALIDATION_SEEDS
+    found = []
+    for seed in seeds:
+        for base in (".", config.OUTPUT_DIR):
+            matches = sorted(glob.glob(os.path.join(base, f"*seed{seed}*.ckpt")))
+            if matches:
+                found.append(matches[0])
+                break
+    return found
+
+
 def select_median_checkpoint(median_seed=None):
     """
     Deterministically selects the deployment checkpoint.
@@ -263,6 +283,16 @@ def generate_and_save_predictions(tft, test_dataloader, df, seed,
     pred_df["TFT_VaR_99_Raw"] = pred_values[:, 0, 0]  # q = 0.01
     pred_df["TFT_Median"] = pred_values[:, 0, 1]      # q = 0.50
     pred_df["TFT_VaR_Upside"] = pred_values[:, 0, 2]  # q = 0.99
+
+    # FIX (Round 23): quantile-crossing audit. Quantile loss does NOT enforce
+    # q0.01 <= q0.50 <= q0.99; verify the hierarchy holds for every forecast.
+    cross_lo = int(np.sum(pred_values[:, 0, 0] > pred_values[:, 0, 1]))
+    cross_hi = int(np.sum(pred_values[:, 0, 1] > pred_values[:, 0, 2]))
+    total_cross = cross_lo + cross_hi
+    print(f"[AUDIT] Quantile crossing violations: {total_cross} / {len(pred_values)} "
+          f"(q01>q50: {cross_lo}, q50>q99: {cross_hi})")
+    if total_cross > 0:
+        print("[WARNING] Neural network predicted inverted quantiles on some rows.")
 
     panel_meta = df[["time_idx", "ticker", "Date", "Log_Ret", "GARCH_VaR_99", "GARCH_sigma"]].copy()
     merged_panel = pred_df.merge(panel_meta, on=["time_idx", "ticker"], how="inner")

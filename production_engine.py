@@ -22,6 +22,101 @@ from metrics import extract_garch_dist_params
 warnings.filterwarnings("ignore")
 
 
+def _infer_quantiles_one_checkpoint(model_checkpoint_path, master_df, target_ticker):
+    """
+    Loads a single checkpoint and returns the raw (q0.01, q0.50, q0.99)
+    quantile forecasts for the terminal trading day of the buffer.
+    """
+    tft = TemporalFusionTransformer.load_from_checkpoint(model_checkpoint_path)
+    tft.eval()
+
+    max_time_idx = master_df["time_idx"].max()
+    encoder_df = master_df[master_df["time_idx"] > (max_time_idx - config.ENCODER_LENGTH)].copy()
+    encoder_df["ticker"] = encoder_df["ticker"].astype(str)
+
+    inference_dataset = TimeSeriesDataSet.from_parameters(
+        tft.dataset_parameters,
+        encoder_df,
+        predict=True,
+        stop_randomization=True,
+    )
+    inference_dataloader = inference_dataset.to_dataloader(
+        batch_size=len(master_df["ticker"].unique()), num_workers=0
+    )
+
+    with torch.no_grad():
+        preds, index_df = tft.predict(inference_dataloader, mode="quantiles", return_index=True)
+        pred_values = preds.cpu().numpy()
+
+    target_row_idx = index_df[index_df["ticker"] == target_ticker].index[0]
+    return (
+        float(pred_values[target_row_idx, 0, 0]),  # q = 0.01
+        float(pred_values[target_row_idx, 0, 1]),  # q = 0.50
+        float(pred_values[target_row_idx, 0, 2]),  # q = 0.99
+    )
+
+
+def run_live_ensemble_inference(checkpoint_paths, live_csv_path="master_df.csv", target_ticker="NIFTY50"):
+    """
+    Live 1-step-ahead 99% VaR from the pre-determined ENSEMBLE rule: the mean
+    of the seed q0.01 (and q0.50 / q0.99) forecasts across all seed checkpoints.
+    This mirrors the backtest-time ensemble exactly (validated == deployed).
+    """
+    if not checkpoint_paths:
+        raise ValueError("[ERROR] run_live_ensemble_inference requires >=1 checkpoint.")
+
+    master_df = pd.read_csv(live_csv_path)
+
+    # Schema-drift guard: buffer must carry every column the checkpoints expect.
+    probe = TemporalFusionTransformer.load_from_checkpoint(checkpoint_paths[0])
+    required_cols = [c for c in (probe.dataset_parameters.get("time_varying_known_reals") or [])
+                     + (probe.dataset_parameters.get("time_varying_unknown_reals") or [])]
+    missing = [c for c in required_cols if c not in master_df.columns]
+    if missing:
+        raise ValueError(
+            f"[ERROR] Live buffer missing columns required by checkpoint: {missing}. "
+            f"Re-run build_data.py to regenerate master_df.csv."
+        )
+    del probe
+
+    # Freshness guard
+    last_date = pd.to_datetime(master_df["Date"].max())
+    days_stale = (pd.Timestamp.now().normalize() - last_date).days
+    if days_stale > 5:
+        raise ValueError(
+            f"[ERROR] Live buffer is stale ({days_stale} days). "
+            f"Re-run deployment.py to refresh master_df.csv."
+        )
+
+    q01_vals, q50_vals, q99_vals = [], [], []
+    for ckpt in checkpoint_paths:
+        q01, q50, q99 = _infer_quantiles_one_checkpoint(ckpt, master_df, target_ticker)
+        q01_vals.append(q01)
+        q50_vals.append(q50)
+        q99_vals.append(q99)
+
+    # Ensemble = mean of the seed quantiles (pre-determined rule).
+    ens_q01 = float(np.mean(q01_vals))
+    ens_q50 = float(np.mean(q50_vals))
+    ens_q99 = float(np.mean(q99_vals))
+
+    print("\n" + "=" * 70)
+    print(f"  TARGET ASSET:                       {target_ticker}")
+    print(f"  Forecast Horizon:                   Next Trading Session (t+1)")
+    print(f"  Ensemble size:                      {len(checkpoint_paths)} seeds")
+    print(f"  Seed q0.01 values:                  {[f'{v:.4f}' for v in q01_vals]}")
+    print(f"  -> FINAL ENSEMBLE 99% VaR BOUND:    {ens_q01:.4f}%")
+    print(f"  (median q0.50 = {ens_q50:.4f}%, upside q0.99 = {ens_q99:.4f}%)")
+    print("=" * 70 + "\n")
+
+    return {
+        "ticker": target_ticker,
+        "final_var_99": float(ens_q01),
+        "seed_q01": q01_vals,
+        "ensemble_size": len(checkpoint_paths),
+    }
+
+
 def run_live_daily_inference(model_checkpoint_path, live_csv_path="master_df.csv", target_ticker="NIFTY50"):
     """
     Executes live End-of-Day (15:30 IST) VaR forecasting for target_ticker.
@@ -148,9 +243,9 @@ def run_live_daily_inference(model_checkpoint_path, live_csv_path="master_df.csv
 
 
 if __name__ == "__main__":
-    from tft_model import select_median_checkpoint
-    ckpt = select_median_checkpoint()
-    if ckpt:
-        run_live_daily_inference(ckpt, live_csv_path="master_df.csv", target_ticker="NIFTY50")
+    from tft_model import select_seed_checkpoints
+    ckpts = select_seed_checkpoints()
+    if ckpts:
+        run_live_ensemble_inference(ckpts, live_csv_path="master_df.csv", target_ticker="NIFTY50")
     else:
-        print("[INFO] No trained model checkpoint found. Run main.py first.")
+        print("[INFO] No trained model checkpoints found. Run main.py first.")

@@ -739,3 +739,45 @@ A production-ready, manual-trigger deployment mechanism with proper cadence sche
 - The GARCH refit is implemented as part of the buffer rebuild (build_data re-runs the PIT GARCH recursion on the full trailing window), which matches the 21-day cadence since the anchor is set on rebuild days.
 - The TFT retrain runs main.py (full multi-seed training) every 126 trading days; main.py records the new anchor and median seed.
 - All files parse cleanly.
+
+---
+
+# PART 23 - EXTERNAL REVIEW PHASE 1 VALIDITY FIXES (Round 23)
+
+## 23.1 Fixes applied
+
+### DM sign convention (CRITICAL #1) - metrics.py
+- diebold_mariano_test now computes d_t = L_TFT - L_GARCH (y_pred2 is the Proposed/TFT, y_pred1 the Baseline/GARCH). A NEGATIVE mean_diff/dm_stat now means the TFT has LOWER pinball loss; a positive value means GARCH lower. Docstring documents the convention.
+- generate_report_plots figure subtitle + audit-table column updated to the corrected convention: "DM Stat (neg=TFT lower / pos=GARCH lower)".
+
+### Fake McNeil-Frey ES test (CRITICAL #4) - metrics.py
+- mcnell_frey_es_test renamed tail_breach_depth_diagnostic: descriptive only (n_exceed, mean_exceedance_loss, mean_standardized_resid). The misleading one-sample t-test on standardized exceedances (H0: E[z]=0) was removed; no ES forecast is passed, so it is explicitly NOT an ES backtest.
+- calculate_metrics + report keys updated (es_t_stat/es_p_value/es_testable removed; tail diagnostics retained).
+- main.py print updated to "Tail breach depth".
+
+### Test-set seed selection removed (CRITICAL #2 & #3) - main.py
+- The canonical forecast is now the pre-determined 3-seed ENSEMBLE: the mean of the seed q={0.01,0.50,0.99} columns aligned per (ticker, time_idx). main.py writes test_tft_predictions_panel.csv from the ensemble and reports per-asset ensemble metrics. No seed is selected by test performance.
+- deployment.py / production_engine.py now ensemble over all seed checkpoints (run_live_ensemble_inference averages the live seed q0.01 forecasts), matching the validated ensemble exactly (validated == deployed).
+- median_seed state replaced by ensemble provenance.
+
+### Quantile-crossing audit (HIGH #11) - tft_model.py
+- generate_and_save_predictions now counts q01>q50 and q50>q99 violations and warns.
+
+### Co-breach test removed (MEDIUM #17) - metrics.py + generate_report_plots.py
+- multivariate_co_breach_test removed (zero power at T=500, alpha=0.01, K=3: E[joint]=0.0005). Report header toned to "REGULATORY-INSPIRED 99% VAR BACKTESTING REPORT" (not Basel/FRTB compliance), co-breach section removed.
+
+### GARCH convergence accounting (HIGH #12) - build_data.py
+- rolling_gjr_garch_pit counts refit_attempts / refit_failures and prints a convergence summary. MLE failures are no longer silent.
+
+### News-impact relabel (MEDIUM #18) - generate_report_plots.py
+- uncond_vol renamed reference_sigma (it is the last conditional vol). The dashed line is relabeled "Counterfactual Symmetric GARCH" (not an independently fitted model).
+
+## 23.2 Not yet applied (Phase 2 research-design items)
+- Ablation tournament (GARCH / TFT / TFT+GARCH_sigma / +macro / Full) - a new experiment, deferred.
+- time_idx / relative_time_idx ablation - deferred pending re-run.
+- The stale draft (niftyvar_draft_2.docx) must be rewritten around the ensemble + corrected DM/ES methodology and current numbers.
+- Real ES methodology (only if ES stays in the paper); McNeil-Frey requires an ES forecast input.
+
+## 23.3 Status
+- All .py files parse cleanly.
+- Critical validity flaws are corrected; the methodology now honestly reports that (under the corrected convention) the point estimates favor GJR-GARCH and DM fails to establish TFT superiority -- the interesting, defensible result.

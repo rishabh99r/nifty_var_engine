@@ -121,26 +121,27 @@ def run_deployment(do_forecast=True, force_garch_refit=False, force_tft_retrain=
     if force_tft_retrain or _tft_retrain_due(state, current_idx):
         print(f"[DEPLOY] TFT retrain due (last_idx={state.get('last_tft_retrain_idx')}).")
         _run([sys.executable, "main.py"])
-        # main.py itself records last_tft_retrain_idx/median_seed in the state.
+        # main.py itself records last_tft_retrain_idx / ensemble provenance.
         state = _load_state()  # reload (main.py updated it)
         actions["tft_retrain"] = True
-        print(f"[DEPLOY] TFT retrained; median seed now {state.get('median_seed')}.")
+        print(f"[DEPLOY] TFT retrained; canonical forecast = 3-seed ENSEMBLE "
+              f"(provenance seed {state.get('retrain_provenance_seed')}).")
 
-    # 3. Run live forecast using the median-seed checkpoint.
+    # 3. Run live forecast using the ENSEMBLE of seed checkpoints
+    #    (pre-determined rule: mean of the seed q0.01 forecasts).
     if do_forecast:
-        from production_engine import run_live_daily_inference
-        from tft_model import select_median_checkpoint
+        from production_engine import run_live_ensemble_inference
+        from tft_model import select_seed_checkpoints
 
-        median_seed = state.get("median_seed")
-        ckpt = select_median_checkpoint(median_seed)
-        if ckpt is None:
+        ckpts = select_seed_checkpoints(config.VALIDATION_SEEDS)
+        if not ckpts:
             raise FileNotFoundError(
-                "[DEPLOY] No checkpoint found. Run main.py once to train the TFT first."
+                "[DEPLOY] No checkpoints found. Run main.py once to train the TFT first."
             )
-        print(f"[DEPLOY] Using checkpoint: {ckpt}")
-        result = run_live_daily_inference(ckpt, live_csv_path="master_df.csv", target_ticker="NIFTY50")
+        print(f"[DEPLOY] Ensemble over {len(ckpts)} checkpoints: {ckpts}")
+        result = run_live_ensemble_inference(ckpts, live_csv_path="master_df.csv", target_ticker="NIFTY50")
         actions["forecast"] = True
-        print(f"[DEPLOY] Final 99% VaR: {result['final_var_99']:.4f}%")
+        print(f"[DEPLOY] Final ensemble 99% VaR: {result['final_var_99']:.4f}%")
 
     print("=" * 70)
     print(f"ACTIONS THIS RUN: {actions}")
@@ -158,7 +159,7 @@ def status():
           f"(next due >= {state.get('last_garch_refit_idx', current_idx) + config.GARCH_REFIT_DAYS})")
     print(f"Last TFT retrain idx:       {state.get('last_tft_retrain_idx')}  "
           f"(next due >= {state.get('last_tft_retrain_idx', current_idx) + config.TFT_RETRAIN_DAYS})")
-    print(f"Median seed:                {state.get('median_seed')}")
+    print(f"Canonical forecast:         ENSEMBLE (provenance seed {state.get('retrain_provenance_seed')})")
 
 
 if __name__ == "__main__":

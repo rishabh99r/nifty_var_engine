@@ -200,11 +200,16 @@ def rolling_gjr_garch_pit(returns_series):
     # Default to standard normal quantile until first successful skew-t refit
     last_q_dist = -2.326
 
+    # Convergence accounting (Round 23): never silently swallow MLE failures.
+    refit_attempts = 0
+    refit_failures = 0
+
     print(f"  -> Running PIT rolling GJR-GARCH across {T} periods (warm-up: {lookback} days)...")
 
     for t in range(lookback, T):
         # 1. Periodic parameter re-estimation
         if (t - lookback) % refit_freq == 0 or current_res is None:
+            refit_attempts += 1
             train_slice = returns_series.iloc[t - lookback : t]
             am = arch_model(train_slice, mean="Constant", vol="Garch", p=1, o=1, q=1, dist="skewt")
             try:
@@ -228,8 +233,9 @@ def rolling_gjr_garch_pit(returns_series):
                 lam = shape["lambda"] if not np.isnan(shape["lambda"]) else 0.0
                 last_q_dist = float(current_res.model.distribution.ppf(0.01, [nu, lam]))
             except Exception:
-                # Retain previous parameters if numerical MLE fails
-                pass
+                # Retain previous parameters if numerical MLE fails -- but
+                # COUNT the failure so it is never silent (Round 23).
+                refit_failures += 1
 
         # FIX 12.2: If the VERY FIRST fit never succeeded (current_res is None),
         # there are no parameters to recurse with -- skip this day rather than
@@ -256,6 +262,11 @@ def rolling_gjr_garch_pit(returns_series):
         vol_arr[t] = sigma_t
         resid_arr[t] = (returns_series.iloc[t] - last_params["mu"]) / sigma_t
         var99_arr[t] = last_params["mu"] + sigma_t * last_q_dist
+
+    # Convergence summary (Round 23): never let failures be silent.
+    print(f"  -> PIT GARCH refits: {refit_attempts} attempted, "
+          f"{refit_attempts - refit_failures} converged, {refit_failures} failed "
+          f"(previous parameters retained on failure).")
 
     return (
         pd.Series(vol_arr, index=returns_series.index),

@@ -303,8 +303,17 @@ def engle_manganelli_dq_test(actual, var_pred, alpha=0.01, lags=4):
 
 
 def diebold_mariano_test(y_true, y_pred1, y_pred2, q=0.01):
-    """Diebold-Mariano test comparing pinball losses with Newey-West HAC SEs."""
-    d_t = pinball_loss(y_true, y_pred1, q) - pinball_loss(y_true, y_pred2, q)
+    """
+    Diebold-Mariano test comparing pinball losses with Newey-West HAC SEs.
+
+    CONVENTION (FIX, Round 23): y_pred1 = Baseline (GJR-GARCH), y_pred2 =
+    Proposed (ECTFT/TFT). The loss differential is defined as
+        d_t = Loss(Proposed) - Loss(Baseline)
+    so a NEGATIVE mean_diff / dm_stat means the PROPOSED model (TFT) has
+    LOWER pinball loss. This makes the sign convention unambiguous and matches
+    the labels used in the reports and figures.
+    """
+    d_t = pinball_loss(y_true, y_pred2, q) - pinball_loss(y_true, y_pred1, q)
     T = len(d_t)
     if T < 5:
         return {"dm_stat": 0.0, "dm_p_value": 1.0, "mean_diff": 0.0}
@@ -325,96 +334,47 @@ def diebold_mariano_test(y_true, y_pred1, y_pred2, q=0.01):
     return {"dm_stat": float(dm_stat), "dm_p_value": float(dm_p_val), "mean_diff": float(d_bar)}
 
 
-def mcnell_frey_es_test(actual, var_pred, sigma, alpha=0.01, mu=0.0):
+def tail_breach_depth_diagnostic(actual, var_pred, sigma, mu=0.0):
     """
-    McNeil-Frey Expected Shortfall backtest (honest, disclosure-first).
+    Descriptive diagnostic of the depth of realized VaR breaches.
 
-    For every day where the realized return falls below the VaR forecast
-    (an exceedance), standardize the exceedance by the forecast volatility:
+    For every day where the realized return falls below the VaR forecast (an
+    exceedance), standardize the exceedance by the forecast volatility:
         z_i = (r_i - mu) / sigma_i
 
-    Reporting rules:
-      - DESCRIPTIVE ES (empirical mean tail loss and mean standardized
-        residual) is always reported when >= config.ES_MIN_BREACHES (>=1)
-        exceedances exist. The SIGN of es_mean_resid is informative: a large
-        negative value indicates the model UNDERSTATES tail severity on
-        breach days (the model fails hardest when it does fail).
-      - A one-sample t-test is computed ONLY when the exceedance count meets
-        config.ES_MIN_BREACHES_TESTABLE (default 5). With a 500-day backtest at
-        alpha=1% the expected exceedance count is ~5, so below this the
-        t-stat is degenerate (tiny sample -> near-zero variance -> absurd
-        t-stats such as -40 from 3 points) and MUST NOT be reported.
+    This is a BREACH-DEPTH DIAGNOSTIC, NOT an Expected Shortfall backtest:
+    no ES forecast is passed in, and no hypothesis test is performed. A large
+    negative mean_standardized_resid indicates the model UNDERSTATES crash
+    severity on the days its VaR is punctured (the model fails hardest when it
+    does fail). Report it descriptively.
+
+    Returns {n_exceed, mean_exceedance_loss, mean_standardized_resid}.
     """
     hits = actual < var_pred
     n_exceed = int(np.sum(hits))
 
-    empty = {
-        "n_exceed": n_exceed,
-        "es_empirical": np.nan,
-        "es_t_stat": np.nan,
-        "es_p_value": np.nan,
-        "es_mean_resid": np.nan,
-        "es_testable": False,
-    }
-
-    if n_exceed < config.ES_MIN_BREACHES:
-        return empty
+    if n_exceed < 1:
+        return {
+            "n_exceed": n_exceed,
+            "mean_exceedance_loss": np.nan,
+            "mean_standardized_resid": np.nan,
+        }
 
     sigma_vals = np.asarray(sigma)[hits]
     actual_vals = np.asarray(actual)[hits]
 
-    # Empirical ES (average loss beyond the VaR boundary)
-    es_empirical = float(np.mean(actual_vals))
+    mean_exceedance_loss = float(np.mean(actual_vals))
 
-    # Standardized exceedances
     with np.errstate(divide="ignore", invalid="ignore"):
         z = (actual_vals - mu) / sigma_vals
     z = z[np.isfinite(z)]
 
-    if len(z) == 0:
-        return empty
-
-    es_mean_resid = float(np.mean(z))
-    testable = len(z) >= config.ES_MIN_BREACHES_TESTABLE
-
-    # Only run the t-test when the sample is statistically meaningful.
-    if testable and len(z) >= 2:
-        t_stat, p_val = stats.ttest_1samp(z, 0.0)
-    else:
-        t_stat, p_val = np.nan, np.nan
+    mean_standardized_resid = float(np.mean(z)) if len(z) > 0 else np.nan
 
     return {
         "n_exceed": n_exceed,
-        "es_empirical": es_empirical,
-        "es_t_stat": float(t_stat),
-        "es_p_value": float(p_val),
-        "es_mean_resid": es_mean_resid,
-        "es_testable": bool(testable),
-    }
-
-
-def multivariate_co_breach_test(actual_dict, var_dict, alpha=0.01):
-    """Evaluates simultaneous tail exceedances across panel indices."""
-    tickers = list(actual_dict.keys())
-    K = len(tickers)
-    T = len(actual_dict[tickers[0]])
-
-    hits = np.zeros((T, K))
-    for i, t in enumerate(tickers):
-        hits[:, i] = (actual_dict[t] < var_dict[t]).astype(int)
-
-    co_breaches = (np.sum(hits, axis=1) == K).astype(int)
-    observed_co_breaches = int(np.sum(co_breaches))
-    p_joint = alpha ** K
-    expected_co_breaches = T * p_joint
-
-    p_value = 1.0 - stats.poisson.cdf(observed_co_breaches - 1, expected_co_breaches) if observed_co_breaches > 0 else 1.0
-
-    return {
-        "panel_size": K,
-        "observed_co_breaches": observed_co_breaches,
-        "expected_co_breaches": float(expected_co_breaches),
-        "poisson_p_value": float(p_value),
+        "mean_exceedance_loss": mean_exceedance_loss,
+        "mean_standardized_resid": mean_standardized_resid,
     }
 
 
@@ -463,12 +423,11 @@ def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, garch_sigma=No
 
     limit, zone = get_basel_traffic_light(kupiec["N"], kupiec["T"], alpha=alpha)
 
-    # McNeil-Frey Expected Shortfall backtest (tail-shape dimension)
+    # Tail breach-depth diagnostic (descriptive; NOT an ES backtest).
     if garch_sigma is not None:
-        es = mcnell_frey_es_test(actual, tft_var, garch_sigma, alpha=alpha)
+        es = tail_breach_depth_diagnostic(actual, tft_var, garch_sigma)
     else:
-        es = {"n_exceed": np.nan, "es_empirical": np.nan, "es_t_stat": np.nan,
-              "es_p_value": np.nan, "es_mean_resid": np.nan, "es_testable": False}
+        es = {"n_exceed": np.nan, "mean_exceedance_loss": np.nan, "mean_standardized_resid": np.nan}
 
     return {
         "breaches": kupiec["N"],
@@ -489,11 +448,8 @@ def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, garch_sigma=No
         "dm_p_value": dm["dm_p_value"],
         "mean_loss_diff": dm["mean_diff"],
         "es_n_exceed": es["n_exceed"],
-        "es_empirical": es["es_empirical"],
-        "es_t_stat": es["es_t_stat"],
-        "es_p_value": es["es_p_value"],
-        "es_mean_resid": es["es_mean_resid"],
-        "es_testable": es["es_testable"],
+        "es_empirical": es.get("mean_exceedance_loss", np.nan),
+        "es_mean_resid": es.get("mean_standardized_resid", np.nan),
     }
 
 
@@ -523,8 +479,11 @@ def evaluate_panel_metrics(panel_df, alpha=0.01):
         actual_dict[t] = actual_dict[t][-min_len:]
         var_dict[t] = var_dict[t][-min_len:]
 
-    co_breach = multivariate_co_breach_test(actual_dict, var_dict, alpha=alpha)
-    return {"per_ticker": per_ticker, "co_breach": co_breach}
+    # NOTE (Round 23): the multivariate co-breach test was REMOVED -- at
+    # T=500, alpha=0.01, K=3 the expected joint-breach count under independence
+    # is 0.0005, so the test has essentially zero power and is not meaningful
+    # evidence about systemic tail dependence.
+    return {"per_ticker": per_ticker}
 
 
 def aggregate_seed_metrics(metrics_list):

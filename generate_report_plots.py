@@ -148,13 +148,17 @@ def plot_all_news_impact_curves(master_df):
         shape = extract_garch_dist_params(res)
         nu = shape["nu"]
         lam = shape["lambda"]
-        uncond_vol = np.sqrt(np.asarray(res.conditional_volatility)[-1] ** 2)
+        # reference_sigma is the LAST conditional volatility (NOT unconditional
+        # vol) used to anchor the news-impact curves (Round 23 rename).
+        reference_sigma = np.sqrt(np.asarray(res.conditional_volatility)[-1] ** 2)
         shocks = np.linspace(-6, 6, 500)
 
-        var_sym = omega + alpha * (shocks ** 2) + beta * (uncond_vol ** 2)
-        var_asym = omega + alpha * (shocks ** 2) + gamma * (shocks < 0) * (shocks ** 2) + beta * (uncond_vol ** 2)
+        var_sym = omega + alpha * (shocks ** 2) + beta * (reference_sigma ** 2)
+        var_asym = omega + alpha * (shocks ** 2) + gamma * (shocks < 0) * (shocks ** 2) + beta * (reference_sigma ** 2)
 
-        ax.plot(shocks, var_sym, "--", color="#7f8c8d", linewidth=1.8, label="Symmetric GARCH")
+        # The dashed line is the COUNTERFACTUAL symmetric version of the fitted
+        # GJR-GARCH recursion (gamma removed), not an independently fit model.
+        ax.plot(shocks, var_sym, "--", color="#7f8c8d", linewidth=1.8, label="Counterfactual Symmetric GARCH")
         ax.plot(shocks, var_asym, color="#c0392b", linewidth=2.2, label=f"GJR-GARCH ($\\gamma$={gamma:.3f})")
 
         ax.set_title(f"{sym} News Impact Curve", fontweight="bold")
@@ -310,8 +314,9 @@ def plot_all_loss_comparisons(panel_df):
         ax.plot(df.index, cum_garch, label="GJR-GARCH", color="gray", linestyle="--")
         ax.plot(df.index, cum_tft, label="Econometrically-Conditioned TFT", color="#27ae60", linewidth=2.0)
 
-        # FIX 14.2: negative dm_stat = ECTFT has LOWER pinball loss (loss(GARCH)-loss(TFT)).
-        sig_txt = f"DM: {m['dm_stat']:.2f} (p={m['dm_p_value']:.4f})" + "\n(negative = ECTFT lower q0.01 loss)"
+        # DM convention (Round 23): d_t = L_TFT - L_GARCH, so NEGATIVE dm_stat
+        # means ECTFT has LOWER pinball loss; positive means GJR-GARCH lower.
+        sig_txt = f"DM: {m['dm_stat']:.2f} (p={m['dm_p_value']:.4f})" + "\n(negative = ECTFT lower loss; positive = GARCH lower)"
         ax.set_title(f"{sym}\n{sig_txt}", fontweight="bold", fontsize=10.5)
         ax.set_xlabel("Test Horizon")
         if i == 0:
@@ -350,15 +355,13 @@ def export_complete_test_suite(panel_df, garch_params, granger_params):
             "Christoffersen p-val": round(m["christ_p_value"], 4),
             "Engle-Manganelli DQ Stat": round(m["dq_stat"], 3) if not np.isnan(m["dq_stat"]) else "N/A",
             "DQ p-value": round(m["dq_p_value"], 4) if not np.isnan(m["dq_p_value"]) else "N/A",
-            # FIX 14.2: negative DM stat = ECTFT has lower pinball loss
-            "Diebold-Mariano Stat (neg=ECTFT)": round(m["dm_stat"], 4),
+            # DM convention (Round 23): d_t = L_TFT - L_GARCH
+            "DM Stat (neg=TFT lower / pos=GARCH lower)": round(m["dm_stat"], 4),
             "DM p-value": round(m["dm_p_value"], 4),
             "Mean Loss Diff": round(m["mean_loss_diff"], 6),
-            "ES n (breaches)": m["es_n_exceed"],
-            "ES mean resid (z)": round(m["es_mean_resid"], 4) if not np.isnan(m["es_mean_resid"]) else "N/A",
-            "ES testable (n>=5)": "YES" if m["es_testable"] else "NO",
-            "ES t-stat": round(m["es_t_stat"], 4) if not np.isnan(m["es_t_stat"]) else "N/A",
-            "ES p-value": round(m["es_p_value"], 4) if not np.isnan(m["es_p_value"]) else "N/A",
+            "Tail n (breaches)": m["es_n_exceed"],
+            "Tail mean exceedance loss": round(m["es_empirical"], 4) if not np.isnan(m["es_empirical"]) else "N/A",
+            "Tail mean std resid (z)": round(m["es_mean_resid"], 4) if not np.isnan(m["es_mean_resid"]) else "N/A",
         })
 
     audit_table = pd.DataFrame(rows)
@@ -368,31 +371,22 @@ def export_complete_test_suite(panel_df, garch_params, granger_params):
     print(f"[SUCCESS] Test suite table saved as CSV to: {csv_path}")
 
     report_path = os.path.join(OUTPUT_DIR, "model_validation_master_report.txt")
-    cb = panel_eval["co_breach"]
 
     with open(report_path, "w") as f:
         f.write("=" * 80 + "\n")
-        f.write("      BASEL III / FRTB MODEL RISK COMPLIANCE AUDIT MASTER REPORT\n")
-        f.write("      (Econometrically-Conditioned TFT -- median seed trajectory)\n")
+        f.write("      REGULATORY-INSPIRED 99% VAR BACKTESTING REPORT\n")
+        f.write("      (Econometrically-Conditioned TFT)\n")
         f.write("=" * 80 + "\n\n")
-        f.write("NOTE: This table reports the MEDIAN-performing seed for transparent\n")
-        f.write("disclosure. Across-seed Mean +/- Std is reported below.\n\n")
+        f.write("NOTE: This table reports the pre-determined 3-seed ENSEMBLE forecast\n")
+        f.write("(mean of the q=0.01 quantile across seeds), not a cherry-picked seed.\n")
+        f.write("Terminology: 'regulatory-inspired 99% VaR backtesting' -- NOT a formal\n")
+        f.write("Basel III/FRTB compliance certification.\n\n")
         f.write(audit_table.to_string(index=False))
-        f.write("\n\nES METHODOLOGY NOTE: 'ES testable (n>=5)' indicates whether the\n")
-        f.write("exceedance count is large enough for a meaningful McNeil-Frey t-test.\n")
-        f.write("Below n=5 the ES t-stat/p-value are DEGENERATE and are suppressed.\n")
-        f.write("'ES mean resid (z)' is the mean standardized exceedance; a strongly\n")
-        f.write("negative value signals tail understatement on breach days.\n")
+        f.write("\n\nTAIL NOTE: 'Tail mean std resid (z)' is a descriptive breach-depth\n")
+        f.write("diagnostic (mean standardized exceedance). A strongly negative value\n")
+        f.write("signals the model understates crash severity on breach days. This is\n")
+        f.write("NOT an Expected Shortfall backtest.\n")
         f.write("\n\n" + "-" * 80 + "\n")
-        f.write("SYSTEMIC RISK & MULTIVARIATE CO-BREACH EVALUATION:\n")
-        f.write(f"  - Panel Size:                     {cb['panel_size']} Indices\n")
-        f.write(f"  - Observed Simultaneous Hits:     {cb['observed_co_breaches']}\n")
-        f.write(f"  - Expected Under Independence:    {cb['expected_co_breaches']:.4f}\n")
-        f.write(f"  - Poisson p-val (H0: independence): {cb['poisson_p_value']:.4f}\n")
-        f.write("  [NOTE] The Poisson null is INDEPENDENT breaches across assets\n")
-        f.write("  (expected = T*alpha^K). Under positive cross-asset tail dependence\n")
-        f.write("  this p-val reads as 'more co-breaches than independence implies'.\n")
-        f.write("-" * 80 + "\n\n")
         f.write("GJR-GARCH(1,1) SKEW-T ESTIMATED PARAMETERS (robust shape extraction):\n")
         for sym, p in garch_params.items():
             nu_str = f"{p['nu']:.2f}" if not np.isnan(p["nu"]) else "N/A"
