@@ -1,3 +1,8 @@
+# SECURITY (S1): local MCP server configs may embed live API keys (e.g.
+# .roo/mcp.json). Never commit them.
+.roo/
+.roo/mcp.json
+
 # Python cache & notebook artifacts
 __pycache__/
 *.py[cod]

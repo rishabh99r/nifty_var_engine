@@ -2,9 +2,11 @@
 # =============================================================================
 # Statistical backtesting and validation metrics for the VaR pipeline.
 # Includes standard VaR backtests (Kupiec, Christoffersen, LR-CC, Engle-
-# Manganelli DQ, Basel traffic light, Diebold-Mariano) plus a McNeil-Frey
-# Expected Shortfall backtest, and helpers to aggregate metrics across
-# multiple random seeds (Mean +/- Std) for honest statistical reporting.
+# Manganelli DQ, Diebold-Mariano) plus a REGULATORY-INSPIRED binomial
+# coverage zone (NOT the formal Basel traffic-light table / FRTB) and a
+# descriptive "Tail Exceedance Depth" diagnostic (NOT a formal McNeil-Frey
+# Expected Shortfall backtest), plus helpers to aggregate metrics across
+# multiple random seeds for honest statistical reporting.
 # =============================================================================
 import numpy as np
 import pandas as pd
@@ -36,10 +38,18 @@ def granger_series_from_panel(sub):
     free of look-ahead bias. Those shifted columns MUST NOT be used for the
     Granger test -- applying a negative shift() to "undo" them would pull
     FUTURE values into the present and destroy the causal arrow. Instead,
-    build_data.py now emits separate, UN-shifted *_NativeDiff columns (and
-    Domestic_RV_NativeProxy) that are used ONLY by this econometric test. They
-    are read here with ZERO shifting, so regressing Y_t on X_{t-k} reflects
-    genuine market chronology.
+    build_data.py emits separate, UN-shifted, STRICT *_NativeDiff columns
+    (NaN on non-co-trading days -- see S4) that are used ONLY by this
+    econometric test. They are read here with ZERO shifting.
+
+    S4 (artificial-zero removal): BOTH returned series are inner-aligned on
+    genuinely shared observations -- rows where EITHER series is NaN (e.g. a
+    US market holiday with no VIX print, or a real-India-VIX day with no US
+    print) are dropped. This is a true inner join on co-trading dates and
+    eliminates forward-filled values / artificial zero-returns that would
+    deflate variance and falsely inflate Granger significance. The two series
+    are returned sharing an identical DatetimeIndex of length
+    min(len(us), len(dom)) after the drop.
 
     Returns (us_series, dom_series, domestic_label).
     """
@@ -65,6 +75,15 @@ def granger_series_from_panel(sub):
             proxy_desc = "rolling-vol proxy (overlapping)"
         ticker_name = sub["ticker"].iloc[0] if "ticker" in sub.columns else "Asset"
         domestic_label = f"{ticker_name} own {proxy_desc}"
+
+    # S4: inner-align on shared observations (drop rows where EITHER side is
+    # NaN). us/dom may carry NaN on non-co-trading calendar days.
+    if not us.index.equals(dom.index):
+        us = us.reindex(us.index.union(dom.index))
+        dom = dom.reindex(us.index)
+    mask = us.notna() & dom.notna()
+    us = us[mask]
+    dom = dom[mask]
 
     return us, dom, domestic_label
 
@@ -418,8 +437,9 @@ def tail_breach_depth_diagnostic(actual, var_pred, sigma, mu=0.0):
     exceedance), standardize the exceedance by the forecast volatility:
         z_i = (r_i - mu) / sigma_i
 
-    This is a BREACH-DEPTH DIAGNOSTIC, NOT an Expected Shortfall backtest:
-    no ES forecast is passed in, and no hypothesis test is performed. A large
+    This is a descriptive "Tail Exceedance Depth" diagnostic (S7) -- NOT an
+    Expected Shortfall backtest: no ES forecast is passed in, and no hypothesis
+    test is performed. A large
     negative mean_standardized_resid indicates the model UNDERSTATES crash
     severity on the days its VaR is punctured (the model fails hardest when it
     does fail). Report it descriptively.
@@ -455,7 +475,14 @@ def tail_breach_depth_diagnostic(actual, var_pred, sigma, mu=0.0):
 
 
 def get_basel_traffic_light(failures, total_obs, alpha=0.01):
-    """Basel III / FRTB Traffic Light status based on binomial CDF."""
+    """
+    REGULATORY-INSPIRED binomial coverage zone (S7).
+
+    This is a custom, sample-size-adapted binomial classification inspired by
+    the Basel traffic-light idea -- it is NOT the formal Basel III / FRTB
+    traffic-light table and confers NO regulatory compliance. Returns
+    (green_breach_limit, zone) where zone in {GREEN, YELLOW, RED}.
+    """
     p_cum = stats.binom.cdf(failures, total_obs, alpha)
     green_limit = stats.binom.ppf(config.BASEL_GREEN_CUM, total_obs, alpha)
     if p_cum < config.BASEL_GREEN_CUM:
@@ -472,7 +499,8 @@ def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, garch_sigma=No
     Universal dispatcher supporting both DataFrame and explicit array parameters.
     If a DataFrame is passed, columns are expected to include:
         Actual or Log_Ret, GARCH_VaR_99, TFT_VaR_99 (or TFT_Downside_99),
-        and optionally GARCH_sigma (for the McNeil-Frey ES backtest).
+        and optionally GARCH_sigma (for the descriptive tail-exceedance-depth
+        diagnostic; NOT a formal ES backtest).
     """
     if isinstance(actual_or_df, pd.DataFrame):
         df = actual_or_df.copy()
@@ -565,12 +593,18 @@ def evaluate_panel_metrics(panel_df, alpha=0.01):
 def aggregate_seed_metrics(metrics_list):
     """
     Aggregates a list of per-seed metric dicts (from calculate_metrics) into
-    Mean +/- Std summary rows, with explicit count of seeds. This enforces
-    honest statistical disclosure across random seeds instead of reporting a
-    single favorable seed.
+    robust summary rows, with explicit count of seeds. This enforces honest
+    statistical disclosure across random seeds instead of reporting a single
+    favorable seed.
+
+    S8 (statistical validity): p-values / test statistics are reported PER
+    SEED in `values` and summarized by MEDIAN + Std -- the mean of p-values is
+    NOT reported because averaging p-values is statistically meaningless.
+    Proper scores (e.g. pinball loss) use MEDIAN as the robust central
+    statistic and Std as the dispersion.
 
     Returns a list of dicts, one per distinct metric key, each with:
-        metric, mean, std, values (list), n_seeds
+        metric, mean, std, median, values (list), n_seeds
     """
     if not metrics_list:
         return []
@@ -599,6 +633,7 @@ def aggregate_seed_metrics(metrics_list):
                 "metric": k,
                 "mean": float("nan"),
                 "std": float("nan"),
+                "median": float("nan"),
                 "values": [round(v, 6) for v in vals],
                 "n_seeds": len(vals),
             })
@@ -608,6 +643,7 @@ def aggregate_seed_metrics(metrics_list):
             "metric": k,
             "mean": float(np.mean(finite_vals)),
             "std": float(np.std(finite_vals, ddof=1)) if len(finite_vals) > 1 else 0.0,
+            "median": float(np.median(finite_vals)),
             "values": [round(v, 6) for v in vals],
             "n_seeds": len(vals),
         })

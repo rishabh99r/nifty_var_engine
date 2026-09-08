@@ -154,32 +154,41 @@ def build_macro_features(us_vix_close, india_vix_close, ticker_index):
     us_sh = config.US_VIX_SHIFT
     in_sh = config.INDIA_VIX_SHIFT
 
-    # Native-calendar daily log-changes (non-overlapping, no ffill zeros)
+    # Native-calendar daily log-changes (non-overlapping, no ffill zeros).
     us_log_change = np.log(us_vix_close).diff().dropna()
-    # Reindex the CHANGES onto the ticker calendar (ffill of changes is safe:
-    # carry forward the last realized change, never invent a zero change).
-    us_change_reindexed = us_log_change.reindex(ticker_index).ffill()
+
+    # ---- ML channel (ffill is SAFE: carries the last realized change, never
+    # invents a zero change). These shifted features feed the TFT and must be
+    # gap-free on the ticker calendar for the model to train/predict.
+    us_change_ml = us_log_change.reindex(ticker_index).ffill()
     us_level_reindexed = us_vix_close.reindex(ticker_index).ffill()
 
     macro_df = pd.DataFrame(index=ticker_index)
-    # ML timezone-shifted features (leakage-safe for the forecasting pipeline)
     macro_df["US_VIX"] = us_level_reindexed.shift(us_sh)
-    macro_df["US_VIX_Diff"] = us_change_reindexed.shift(us_sh)
+    macro_df["US_VIX_Diff"] = us_change_ml.shift(us_sh)
     macro_df["US_VIX_Level"] = us_level_reindexed.shift(us_sh)
-    # Native (unshifted) chronological series -- used ONLY by the econometric
-    # Granger-causality test, where a causal lag structure must reflect true
-    # market chronology. Kept separate from the shifted ML columns (FIREWALL).
-    macro_df["US_VIX_NativeDiff"] = us_change_reindexed
+
+    # ---- Econometric channel (STRICT, S4): the *_NativeDiff columns are used
+    # ONLY by the Granger-causality tests. They are reindexed onto the ticker
+    # calendar WITHOUT ffill, so a ticker-trading day on which the US market
+    # was CLOSED carries NaN. The shared helper (metrics.granger_series_from_
+    # panel) drops NaN after joining, which yields a genuine INNER JOIN on
+    # co-trading dates -- no carried-forward values masquerading as real
+    # observations, no artificial zeros/autocorrelation inflating significance.
+    # These columns are attached to master_df AFTER the ML dropna() (see
+    # generate_clean_production_data) so their NaNs never shrink the model panel.
+    macro_df["US_VIX_NativeDiff"] = us_log_change.reindex(ticker_index)
 
     if india_vix_close is not None:
         in_log_change = np.log(india_vix_close).diff().dropna()
-        in_change_reindexed = in_log_change.reindex(ticker_index).ffill()
+        in_change_ml = in_log_change.reindex(ticker_index).ffill()
         in_level_reindexed = india_vix_close.reindex(ticker_index).ffill()
 
         macro_df["India_VIX"] = in_level_reindexed.shift(in_sh)
-        macro_df["India_VIX_Diff"] = in_change_reindexed.shift(in_sh)
+        macro_df["India_VIX_Diff"] = in_change_ml.shift(in_sh)
         macro_df["India_VIX_Level"] = in_level_reindexed.shift(in_sh)
-        macro_df["India_VIX_NativeDiff"] = in_change_reindexed
+        # STRICT native calendar (no ffill): NaN where India VIX did not trade.
+        macro_df["India_VIX_NativeDiff"] = in_log_change.reindex(ticker_index)
     else:
         # NOTE: when the real India VIX is unavailable, India_VIX_NativeDiff is
         # left NaN here and the caller (generate_clean_production_data) fills it
@@ -310,20 +319,28 @@ def rolling_gjr_garch_pit(returns_series):
     )
 
 
-def generate_clean_production_data(start_date=None, end_date=None):
+def generate_clean_production_data(start_date=None, end_date=None, purge=True):
     """
     Rebuilds the full master panel.
 
     - start_date/end_date default to config.START_DATE / config.END_DATE.
-      config.END_DATE is dynamic (today) in production; pass an explicit
-      end_date for a reproducible research cut-off.
+      config.END_DATE is the FROZEN research cutoff; pass an explicit end_date
+      for a reproducible research window.
+    - purge=True (default, research path): wipes stale model checkpoints and
+      prediction artifacts first via purge_stale_artifacts().
+    - purge=False: rebuilds the buffer WITHOUT touching any model artifacts.
+      This is the SAFE path used by deployment (S2) so a routine market-data
+      refresh can NEVER destroy trained checkpoints.
     """
     if start_date is None:
         start_date = config.START_DATE
     if end_date is None:
         end_date = config.END_DATE
 
-    purge_stale_artifacts()
+    if purge:
+        purge_stale_artifacts()
+    else:
+        print("[ETL] purge=False: leaving all checkpoints / prediction artifacts intact.")
 
     print("[ETL] Fetching historical index panel and cross-border volatility...")
     print(f"[ETL] Window: {start_date} -> {end_date}")
@@ -368,13 +385,17 @@ def generate_clean_production_data(start_date=None, end_date=None):
         df["GARCH_resid"] = resid
         df["GARCH_VaR_99"] = var_99
 
-        # Macro features aligned to the ticker trading calendar
+        # Macro features aligned to the ticker trading calendar.
         macro_df = build_macro_features(us_vix_close, india_vix_close, df.index)
 
         df["US_VIX"] = macro_df["US_VIX"]
         df["US_VIX_Diff"] = macro_df["US_VIX_Diff"]
         df["US_VIX_Level"] = macro_df["US_VIX_Level"]
-        df["US_VIX_NativeDiff"] = macro_df["US_VIX_NativeDiff"]
+        # S4: STRICT *_NativeDiff columns (NaN on non-co-trading days) are
+        # attached AFTER df.dropna() below so their NaNs NEVER shrink the ML
+        # training panel. Econometric consumers dropna() themselves to obtain a
+        # genuine inner join on shared trading dates.
+        # (US_VIX_NativeDiff / India_VIX_NativeDiff assigned post-drop.)
 
         # FIX 14.3: Domestic realized-vol proxy for the Granger path. The
         # rolling(5).std() transform is OVERLAPPING and inflates serial
@@ -395,7 +416,6 @@ def generate_clean_production_data(start_date=None, end_date=None):
             df["India_VIX"] = macro_df["India_VIX"]
             df["India_VIX_Diff"] = macro_df["India_VIX_Diff"]
             df["India_VIX_Level"] = macro_df["India_VIX_Level"]
-            df["India_VIX_NativeDiff"] = macro_df["India_VIX_NativeDiff"]
         else:
             # Honest fallback: realize-vol proxy, clearly labelled. Uses the
             # NON-overlapping series for the native (econometric) column so the
@@ -407,9 +427,24 @@ def generate_clean_production_data(start_date=None, end_date=None):
             df["India_VIX"] = np.nan
             df["India_VIX_Diff"] = df["Domestic_RV_Proxy"]
             df["India_VIX_Level"] = np.nan
-            df["India_VIX_NativeDiff"] = df["Domestic_RV_NativeNonOverlap"]
 
-        df = df.dropna()  # purges warm-up period
+        # ML dropna() -- purges the GARCH warm-up and any ML-channel NaN while
+        # the strict econometric native columns are NOT yet attached (S4).
+        df = df.dropna()
+
+        # S4: attach the STRICT *_NativeDiff columns AFTER the ML dropna() so a
+        # US/India market holiday (a ticker trading day with no VIX print) does
+        # NOT remove that row from the training panel. Econometric consumers
+        # (metrics.granger_series_from_panel) dropna() to inner-join only the
+        # genuinely shared co-trading dates.
+        df["US_VIX_NativeDiff"] = macro_df.loc[df.index, "US_VIX_NativeDiff"]
+        if used_real_india:
+            # Real India VIX: strict native calendar (NaN on non-India days).
+            df["India_VIX_NativeDiff"] = macro_df.loc[df.index, "India_VIX_NativeDiff"]
+        else:
+            # Proxy fallback: the non-overlapping |daily return| proxy is defined
+            # on the TICKER's own calendar, so it is fully observed (NaN-free).
+            df["India_VIX_NativeDiff"] = df["Domestic_RV_NativeNonOverlap"]
 
         df["ticker"] = label
         df["Date"] = df.index.strftime("%Y-%m-%d")
@@ -443,6 +478,20 @@ def generate_clean_production_data(start_date=None, end_date=None):
     print(f"\n[SUCCESS] Reconstructed clean multi-series panel at: {output_path}")
     print(f"Total Observations: {len(master_df)} rows across {len(config.TICKERS)} tickers.")
     print(f"Domestic Volatility Source: {'Real India VIX' if used_real_india else 'Domestic_RV_Proxy'}")
+
+
+def refresh_production_data_only(start_date=None, end_date=None):
+    """
+    S2 (security/engineering): SAFELY rebuilds the master buffer for live
+    inference WITHOUT running purge_stale_artifacts().
+
+    A routine market-data refresh must NEVER destroy trained checkpoints or
+    validated prediction artifacts. The deployment orchestrator calls THIS
+    function (not generate_clean_production_data with its purge), so a stale
+    buffer can be refreshed without silently invalidating the ensemble.
+    """
+    print("[ETL] refresh_production_data_only: safe market-data refresh (NO purge).")
+    generate_clean_production_data(start_date=start_date, end_date=end_date, purge=False)
 
 
 if __name__ == "__main__":

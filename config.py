@@ -106,8 +106,8 @@ GARCH_MIN_VARIANCE = 1e-6
 GARCH_REFIT_DAYS = 21     # trading days between GARCH parameter refits (~1 month)
 TFT_RETRAIN_DAYS = 126    # trading days between TFT retrains (~6 months)
 # State file for the production cadence bookkeeping.
+# S5: MEDIAN_SEED_FILE removed -- the system is ENSEMBLE-ONLY (no median seed).
 DEPLOYMENT_STATE_FILE = "deployment_state.json"
-MEDIAN_SEED_FILE = "median_seed.txt"
 
 # ----------------------------------------------------------------------------
 # TFT ARCHITECTURE (Champion config -- kept as the auditable, committed spec)
@@ -146,9 +146,11 @@ BASEL_GREEN_CUM = 0.95
 BASEL_YELLOW_CUM = 0.9999
 
 # ----------------------------------------------------------------------------
-# EXPECTED SHORTFALL BACKTEST (McNeil-Frey)
+# TAIL EXCEEDANCE DEPTH DIAGNOSTIC (S7)
 # ----------------------------------------------------------------------------
-ES_ALPHA = 0.01                     # 99% ES
+# Descriptive breach-depth statistic: mean standardized exceedance on breach
+# days. Explicitly NOT a formal McNeil-Frey Expected Shortfall backtest.
+ES_ALPHA = 0.01                     # 99% tail threshold for the descriptive depth diagnostic
 ES_MIN_BREACHES = 1                 # require >=1 exceedance to report descriptive ES
 # Minimum exceedances required to run a MEANINGFUL statistical test on ES.
 # Below this the t-stat/p-value are degenerate (tiny sample -> near-zero

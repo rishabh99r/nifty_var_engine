@@ -1,13 +1,14 @@
 # proof.py
 # =============================================================================
-# Baseline econometric & causality proofs.
+# Baseline econometric proofs & Granger PREDICTIVE-PRECEDENCE diagnostics.
 #
 # Fixes applied:
 #   - Skew-T GJR-GARCH parameters extracted BY NAME (nu, lambda), never
 #     positionally, so the reported tail-df is meaningful.
-#   - Granger causality uses the ACTUAL US VIX and (real) India VIX daily
-#     log-differences, avoiding the serial-correlation artifacts of
-#     overlapping rolling windows.
+#   - Granger tests use the ACTUAL US VIX and (real) India VIX daily
+#     log-differences INNER-JOINED on genuinely shared trading dates (S4),
+#     avoiding forward-fill / overlapping-window artifacts.
+#   - Terminology (S7): "predictive precedence", not "causation".
 # =============================================================================
 import os
 import warnings
@@ -72,8 +73,10 @@ def run_empirical_proofs(df_path="master_df.csv", max_lag=5):
         # Report the raw fitted parameter names so any naming surprise is visible
         print(f"  [DEBUG] Fitted parameter names: {list(res.params.index)}")
 
-    # 2. CROSS-BORDER GRANGER CAUSALITY on native (unshifted) VIX log-differences
-    print("\n[STEP 2] Executing Granger Causality (US VIX <-> India Volatility) on NATIVE-CALENDAR log-diffs...")
+    # 2. CROSS-BORDER GRANGER PREDICTIVE PRECEDENCE on native (unshifted) VIX
+    #    log-differences, inner-joined on shared trading dates (S4/S7).
+    print("\n[STEP 2] Granger Predictive-Precedence (US VIX <-> India Volatility) "
+          "on SHARED-DATE native-calendar log-diffs...")
     nifty = df[df["ticker"] == "NIFTY50"].sort_values(by="time_idx").copy()
 
     # Build chronologically-true series from the *_NativeDiff columns built in
@@ -92,23 +95,25 @@ def run_empirical_proofs(df_path="master_df.csv", max_lag=5):
     print("  and zero%/dup% are small (no calendar-misalignment artifact).\n")
 
     # NOTE (10.4): statsmodels' grangercausalitytests tests whether Col 1
-    # Granger-causes Col 0. So [["dom","us"]] = "US -> dom" (forward) and
-    # [["us","dom"]] = "dom -> US" (reverse). Do not reorder casually.
-    print(f"  -> Forward: US VIX Granger-causes {domestic_label}")
+    # has predictive precedence for Col 0. So [["dom","us"]] = "US -> dom"
+    # (forward) and [["us","dom"]] = "dom -> US" (reverse). "Granger" here means
+    # predictive precedence, NOT structural causation (S7).
+    print(f"  -> Forward: US VIX predictive precedence for {domestic_label}")
     res_forward = grangercausalitytests(clean_df[["dom", "us"]], maxlag=max_lag, verbose=False)
 
-    print(f"  -> Reverse: {domestic_label} Granger-causes US VIX")
+    print(f"  -> Reverse: {domestic_label} predictive precedence for US VIX")
     res_reverse = grangercausalitytests(clean_df[["us", "dom"]], maxlag=max_lag, verbose=False)
 
-    print("\n--- Granger Causality Significance Matrix (p-values) ---")
+    print("\n--- Granger Predictive-Precedence Matrix (p-values) ---")
+    print("    [S9 caveat: unadjusted p-values, exploratory; family not Holm-corrected]")
     for l in lags:
         p_fwd = res_forward[l][0]["ssr_chi2test"][1]
         p_rev = res_reverse[l][0]["ssr_chi2test"][1]
         fwd_star = "***" if p_fwd < 0.01 else ("**" if p_fwd < 0.05 else "")
         rev_star = "***" if p_rev < 0.01 else ("**" if p_rev < 0.05 else "")
         print(f"  Lag {l} Day(s):")
-        print(f"    - US VIX Granger-causes India Volatility: p = {p_fwd:.5f} {fwd_star}")
-        print(f"    - India Volatility Granger-causes US VIX: p = {p_rev:.5f} {rev_star}")
+        print(f"    - US VIX predictive precedence for India Volatility: p = {p_fwd:.5f} {fwd_star}")
+        print(f"    - India Volatility predictive precedence for US VIX: p = {p_rev:.5f} {rev_star}")
 
     print("\n===== BASELINE DIAGNOSTICS COMPLETE =====")
 

@@ -133,7 +133,8 @@ def main():
 
         print(f"\n[AUDIT] Seed {seed} (NIFTY 50 Results):")
         print(f"  -> Out-of-Sample Days:  {nifty_metrics['total_obs']}")
-        print(f"  -> 99% VaR Breaches:    {nifty_metrics['breaches']} (Basel {nifty_metrics['basel_zone']} Zone)")
+        print(f"  -> 99% VaR Breaches:    {nifty_metrics['breaches']} "
+              f"(Regulatory-Inspired Binomial Zone: {nifty_metrics['basel_zone']})")
         print(f"  -> Kupiec POF p-value:  {nifty_metrics['kupiec_p_value']:.4f}")
         print(f"  -> Christoffersen Ind:  {nifty_metrics['christ_p_value']:.4f}")
         print(f"  -> Diebold-Mariano Stat: {nifty_metrics['dm_stat']:.4f} (p-value: {nifty_metrics['dm_p_value']:.4f}) "
@@ -142,21 +143,27 @@ def main():
               f"mean std resid z = {nifty_metrics['es_mean_resid']:.3f}")
 
     # ------------------------------------------------------------------
-    # Multi-seed aggregation (per-asset Mean +/- Std) for disclosure
+    # Multi-seed aggregation (per-seed median +/- std) for disclosure.
+    # S8: p-values / test statistics are reported PER SEED (see `values`);
+    # the summary uses the MEDIAN as the robust central statistic. The mean of
+    # p-values is never reported (statistically meaningless). The DM
+    # `mean_loss_diff` (per-seed pinball-loss differential) is the headline
+    # dispersion measure -- median +/- std across seeds.
     # ------------------------------------------------------------------
-    print("\n=== MULTI-SEED AGGREGATION (Mean +/- Std) ===")
+    print("\n=== MULTI-SEED AGGREGATION (MEDIAN +/- STD) ===")
     agg_rows = aggregate_seed_metrics(all_seed_metrics)  # NIFTY50-focused per-seed summary
     report_lines = []
     report_lines.append("=" * 80)
-    report_lines.append("      MULTI-SEED VALIDATION REPORT (MEAN +/- STD ACROSS SEEDS)")
+    report_lines.append("      MULTI-SEED VALIDATION REPORT (MEDIAN +/- STD ACROSS SEEDS)")
     report_lines.append("=" * 80)
     report_lines.append(f"Seeds: {config.VALIDATION_SEEDS} (n = {len(all_seed_metrics)})")
+    report_lines.append("S8: p-values are NOT averaged across seeds -- reported per seed.")
     report_lines.append("")
-    report_lines.append(f"{'Metric':<24}{'Mean':>16}{'Std':>16}")
+    report_lines.append(f"{'Metric':<24}{'Median':>16}{'Std':>16}")
     report_lines.append("-" * 60)
     for row in agg_rows:
         report_lines.append(
-            f"{row['metric']:<24}{_fmt_val(row['mean']):>16}{_fmt_val(row['std']):>16}   values={row['values']}"
+            f"{row['metric']:<24}{_fmt_val(row['median']):>16}{_fmt_val(row['std']):>16}   values={row['values']}"
         )
 
     # ------------------------------------------------------------------
@@ -219,7 +226,8 @@ def main():
     report_lines.append("ENSEMBLE (mean-of-seeds q0.01) per-asset breach counts:")
     for t, m in ensemble_metrics.items():
         report_lines.append(f"  {t}: {m['breaches']} breaches / {m['total_obs']} "
-                            f"(Basel {m['basel_zone']}), Kupiec p={m['kupiec_p_value']:.4f}, "
+                            f"(Reg-Inspired Binomial Zone {m['basel_zone']}), "
+                            f"Kupiec p={m['kupiec_p_value']:.4f}, "
                             f"DM={m['dm_stat']:.4f} (p={m['dm_p_value']:.4f})")
     report_lines.append("NOTE: canonical tables use the pre-determined 3-seed ensemble, "
                         "never a test-selected seed.")
@@ -228,11 +236,8 @@ def main():
     with open("multi_seed_validation_report.txt", "w") as f:
         f.write("\n".join(report_lines))
 
-    # Persist deployment retrain anchor (ensemble version: no single median seed).
-    # Keep MEDIAN_SEED_FILE for backward compat but note it is not used for the
-    # canonical forecast.
-    with open(config.MEDIAN_SEED_FILE, "w") as f:
-        f.write("ENSEMBLE")
+    # Persist deployment retrain anchor. The system is ENSEMBLE-ONLY (S5):
+    # there is no median-seed file anymore.
     _record_deployment_retrain(seed=config.VALIDATION_SEEDS[0])
 
     # Persist to Google Drive if mounted

@@ -10,8 +10,8 @@
 #     PIT filter reflects fresh parameters.
 #   - EVERY 126 TRADING DAYS (TFT_RETRAIN_DAYS, ~6 months): re-run main.py to
 #     retrain the 3-seed TFT on the full available history (up to a cap) with
-#     the standard temporal split discipline, then promote the median-seed
-#     checkpoint.
+#     the standard temporal split discipline. The canonical forecast is the
+#     3-seed ENSEMBLE (S5: ensemble-only, no median-seed path).
 #
 # Cadence bookkeeping lives in deployment_state.json (see config constants).
 # This orchestrator decides WHAT to do on a given invocation based on the last
@@ -77,13 +77,17 @@ def _update_buffer():
     """
     Rebuild the master buffer through today.
 
+    S2 (security/engineering): uses build_data.refresh_production_data_only()
+    which NEVER calls purge_stale_artifacts() -- a routine market-data refresh
+    must not destroy trained checkpoints or validated prediction artifacts.
+
     PRODUCTION path only: uses the DYNAMIC config.PRODUCTION_END_DATE (today)
     so the served buffer is fresh. Research runs (build_data.py standalone /
     main.py / ablation_runner.py) stay frozen on config.END_DATE
     (= RESEARCH_END_DATE) for exact reproducibility.
     """
     import build_data
-    build_data.generate_clean_production_data(
+    build_data.refresh_production_data_only(
         start_date=config.START_DATE, end_date=config.PRODUCTION_END_DATE
     )
 

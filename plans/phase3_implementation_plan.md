@@ -153,6 +153,23 @@ Dependency order: config → metrics → tft_model/build_data/proof → main/abl
 
 ---
 
+## 7. Security & engineering patches (user-approved 2026-09-08)
+
+| ID | Patch | Decision |
+|----|-------|----------|
+| S1 | **API key leak** — `.roo/mcp.json` contains a live `EXA_API_KEY`. | User revokes key in Exa dashboard + runs `git filter-repo --path .roo/mcp.json --invert-paths` themselves. I add `.roo/` to `.gitignore` (no history rewrite by me). |
+| S2 | **Deployment purge isolation** — `deployment._update_buffer()` → `generate_clean_production_data()` → `purge_stale_artifacts()` wipes checkpoints. | Add `build_data.refresh_production_data_only(start, end)` (data rebuild with NO purge) and point `deployment._update_buffer()` at it. |
+| S3 | **Partial-ensemble governance** — `run_live_ensemble_inference` only rejects empty lists. | Hard-fail unless `len(checkpoint_paths) == len(config.VALIDATION_SEEDS)`. |
+| S4 | **Granger artificial zeros** — `*_NativeDiff` cols are reindexed+ffilled in `build_macro_features`, so `granger_series_from_panel` may test forward-filled data. | Fix in the SHARED helper `metrics.granger_series_from_panel` (covers proof.py + generate_report_plots.py): inner-join native-calendar diffs on genuinely shared dates only. |
+| S5 | **Dead median-seed logic** | Delete `select_median_checkpoint()` + `MEDIAN_SEED_FILE` const + its write in main.py and read in deployment.py. Ensemble-only. |
+| S6 | **Reproducibility** | Add `environment_check.py` (assert python/torch/ptf/arch); note `pip freeze > requirements.lock` in validated Colab; add `README.md`. |
+| S7 | **Terminology** | "Basel Traffic Light"→"Regulatory-Inspired Binomial Zone"; "Expected Shortfall"→"Tail Exceedance Depth Diagnostic"; "causality/US VIX causes"→"predictive precedence". |
+| S8 | **Seed aggregation** | Stop averaging p-values across seeds; report median + std of per-seed pinball loss (initiation variance). |
+| S9 | **Statistical power** | Annotate Kupiec/Christoffersen as low-power at 500-day/1% → "no evidence of failure" language, not proof of accuracy. |
+| S10 | **Core-claim narrative** | Full ECTFT underperformed GARCH-conditioned TFT; GARCH prior highly effective; cross-border macro adds noise degrading 1% VaR. |
+
+---
+
 ## 6. Post-plan additions (approved during implementation, 2026-09-08)
 
 ### 6.1 Reproducibility environment

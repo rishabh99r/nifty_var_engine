@@ -63,9 +63,20 @@ def run_live_ensemble_inference(checkpoint_paths, live_csv_path="master_df.csv",
     Live 1-step-ahead 99% VaR from the pre-determined ENSEMBLE rule: the mean
     of the seed q0.01 (and q0.50 / q0.99) forecasts across all seed checkpoints.
     This mirrors the backtest-time ensemble exactly (validated == deployed).
+
+    S3 (model governance): HARD-FAILS unless exactly the validated number of
+    seed checkpoints is supplied. A partial (1- or 2-model) ensemble is never
+    silently served -- the backtest was validated on N seeds, so deployment
+    must use the same N or refuse to forecast.
     """
-    if not checkpoint_paths:
-        raise ValueError("[ERROR] run_live_ensemble_inference requires >=1 checkpoint.")
+    expected_models = len(config.VALIDATION_SEEDS)
+    if len(checkpoint_paths) != expected_models:
+        raise RuntimeError(
+            f"[FATAL GOVERNANCE ERROR] Expected exactly {expected_models} seed "
+            f"checkpoints for the ensemble (validated seeds "
+            f"{list(config.VALIDATION_SEEDS)}), but found {len(checkpoint_paths)}. "
+            f"Refusing to run a partial ensemble."
+        )
 
     master_df = pd.read_csv(live_csv_path)
 

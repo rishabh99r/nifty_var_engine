@@ -3,14 +3,15 @@
 # Publication figure generation and audit report export.
 #
 # Methodology fixes applied:
-#   - Granger causality uses the *_NativeDiff columns (UN-shifted, true
-#     chronological calendar) to preserve exact causal integrity -- separate
-#     from the timezone-shifted ML features (firewall).
+#   - Granger predictive-precedence tests use the STRICT *_NativeDiff columns
+#     (UN-shifted, inner-joined on shared trading dates -- S4) to preserve
+#     causal integrity -- separate from the timezone-shifted ML features.
 #   - GARCH skew-t degrees of freedom are robustly extracted via
 #     metrics.extract_garch_dist_params(), never positionally.
-#   - The audit table reports the MEDIAN-performing seed's trajectory and, in
-#     the master report, Mean +/- Std aggregation across all seeds.
-#   - Expected Shortfall (McNeil-Frey) is included as a tail-shape dimension.
+#   - The audit table reports the pre-determined 3-seed ENSEMBLE trajectory and,
+#     in the master report, per-seed dispersion.
+#   - The tail-shape column is a descriptive "Tail Exceedance Depth" diagnostic
+#     (S7), NOT a formal McNeil-Frey Expected Shortfall backtest.
 # =============================================================================
 import os
 import warnings
@@ -179,7 +180,7 @@ def plot_all_news_impact_curves(master_df):
 # 3. GRANGER CAUSALITY on DAILY LOG-DIFFERENCES (native VIX calendar)
 # =====================================================================
 def plot_all_granger_spillover(master_df):
-    print("[PLOT 3/6] Generating Granger Causality Profiles (native-calendar log-diffs)...")
+    print("[PLOT 3/6] Generating Granger Predictive-Precedence Profiles (shared-date log-diffs)...")
     fig, axes = plt.subplots(1, 3, figsize=(18, 4.8), dpi=300, sharey=True)
     lags = [1, 2, 3, 5]
     granger_results = {}
@@ -379,15 +380,23 @@ def export_complete_test_suite(panel_df, garch_params, granger_params):
         f.write("=" * 80 + "\n\n")
         f.write("NOTE: This table reports the pre-determined 3-seed ENSEMBLE forecast\n")
         f.write("(mean-of-seed q=0.01 forecast across seeds), not a cherry-picked seed.\n")
-        f.write("Terminology: 'Binomial coverage zone' is a REGULATORY-INSPIRED custom\n")
-        f.write("binomial classification (sample-size adapted), NOT the formal Basel\n")
+        f.write("Terminology (S7): 'Regulatory-Inspired Binomial Zone' is a custom,\n")
+        f.write("sample-size-adapted binomial classification -- NOT the formal Basel\n")
         f.write("traffic-light table, and NOT a Basel III/FRTB compliance certification.\n")
-        f.write(f"Frozen research cut-off: {config.RESEARCH_END_DATE}. No time_idx feature.\n\n")
+        f.write(f"Frozen research cut-off: {config.RESEARCH_END_DATE}. No time_idx feature.\n")
+        f.write("STATISTICAL-POWER CAVEAT (S9): at 500 OOS days and alpha=1% only ~5\n")
+        f.write("exceptions are expected, so Kupiec / Christoffersen / DQ tests have LOW\n")
+        f.write("POWER. Non-rejection means 'no evidence of failure' -- it is NOT proof\n")
+        f.write("of calibration accuracy.\n")
+        f.write("CORE FINDING (S10): the Full ECTFT underperformed the GARCH-conditioned\n")
+        f.write("TFT in out-of-sample 1% VaR accuracy on this sample: the GJR-GARCH prior\n")
+        f.write("is highly effective for neural tail-risk forecasting, while the\n")
+        f.write("cross-border macro features introduce noise that degrades 1% VaR.\n\n")
         f.write(audit_table.to_string(index=False))
         f.write("\n\nTAIL NOTE: 'Tail mean std resid (z)' is a descriptive breach-depth\n")
-        f.write("diagnostic (mean standardized exceedance). A strongly negative value\n")
-        f.write("signals the model understates crash severity on breach days. This is\n")
-        f.write("NOT an Expected Shortfall backtest.\n")
+        f.write("diagnostic ('Tail Exceedance Depth', S7) -- mean standardized\n")
+        f.write("exceedance. A strongly negative value signals the model understates\n")
+        f.write("crash severity on breach days. NOT an Expected Shortfall backtest.\n")
         f.write("\n\n" + "-" * 80 + "\n")
         f.write("GJR-GARCH(1,1) SKEW-T ESTIMATED PARAMETERS (robust shape extraction):\n")
         for sym, p in garch_params.items():
@@ -395,7 +404,8 @@ def export_complete_test_suite(panel_df, garch_params, granger_params):
             lam_str = f"{p['lambda']:.3f}" if not np.isnan(p["lambda"]) else "N/A"
             f.write(f"  [{sym}] Omega={p['omega']:.5f}, Alpha={p['alpha']:.5f}, Gamma={p['gamma']:.5f}, "
                     f"Beta={p['beta']:.5f}, df(nu)={nu_str}, lambda={lam_str}\n")
-        f.write("\nCROSS-BORDER CAUSALITY (NATIVE CALENDAR -- no ML timezone shift):\n")
+        f.write("\nCROSS-BORDER PREDICTIVE PRECEDENCE (S7; shared trading dates,\n")
+        f.write("native calendar, no ML timezone shift, no forward-fill):\n")
         for sym, g in granger_params.items():
             dom_label = g.get("domestic_label", "")
             f.write(f"  [{sym}] US VIX -> {dom_label}:\n")
