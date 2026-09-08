@@ -38,24 +38,37 @@ def run_empirical_proofs(df_path="master_df.csv", max_lag=5):
     tickers = df["ticker"].unique()
 
     # 1. INDEPENDENT GJR-GARCH ESTIMATION (keyed-by-name parameter extraction)
+    # NOTE (Phase-3 / Reviewer): these are FULL-SAMPLE descriptive estimates --
+    # they characterize the data and are NOT the point-in-time forecasts used in
+    # the backtest (those come from build_data.rolling_gjr_garch_pit).
     print("\n[STEP 1] Fitting Empirical Skew-T GJR-GARCH(1,1) Across Panel Series...")
+    print("         (FULL-SAMPLE descriptive estimates, distinct from the PIT backtest fits)")
     for sym in tickers:
         sub = df[df["ticker"] == sym].sort_values(by="time_idx").dropna(subset=["Log_Ret"])
         returns = sub["Log_Ret"].values
         am = arch_model(returns, vol="Garch", p=1, o=1, q=1, dist="skewt")
-        res = am.fit(disp="off")
+        try:
+            res = am.fit(disp="off", show_warning=False)
+        except Exception as e:
+            print(f"  [WARN] {sym}: full-sample GARCH fit raised: {e}")
+            continue
+        conv_flag = int(getattr(res, "convergence_flag", -1))
 
         shape = extract_garch_dist_params(res)
         nu = shape["nu"]
         lam = shape["lambda"]
 
-        print(f"\n--- Estimated Parameters: {sym} ---")
+        conv_tag = "CONVERGED" if conv_flag == 0 else f"NOT CONVERGED (flag={conv_flag})"
+        print(f"\n--- Estimated Parameters: {sym}  [{conv_tag}] ---")
         print(f"  Omega (Baseline Variance):   {res.params['omega']:.6f}")
         print(f"  Alpha (Symmetric Shock):      {res.params['alpha[1]']:.6f}")
         print(f"  Gamma (Asymmetric Leverage):  {res.params['gamma[1]']:.6f}")
         print(f"  Beta (GARCH Persistence):      {res.params['beta[1]']:.6f}")
         print(f"  Nu (Tail Degrees of Freedom): {nu:.4f}" if not np.isnan(nu) else "  Nu (Tail df): N/A")
         print(f"  Lambda (Skew Parameter):      {lam:.4f}" if not np.isnan(lam) else "  Lambda (Skew): N/A")
+        if conv_flag != 0:
+            print("  [WARNING] Optimizer did not report convergence; treat these "
+                  "descriptive parameters with caution.")
         # Report the raw fitted parameter names so any naming surprise is visible
         print(f"  [DEBUG] Fitted parameter names: {list(res.params.index)}")
 

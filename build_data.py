@@ -41,8 +41,11 @@ def purge_stale_artifacts():
     stale_files = [
         "master_df.csv",
         "test_tft_predictions.csv",
+        "test_tft_predictions_panel.csv",
+        "ablation_tournament_results.csv",
         "tft_nifty_optimization.db",
         "model_validation_master_report.txt",
+        "experiment_manifest.json",  # stale until fresh training rewrites it
     ]
     for file in stale_files:
         if os.path.exists(file):
@@ -52,7 +55,23 @@ def purge_stale_artifacts():
             except Exception as e:
                 print(f"  [WARNING] Could not purge {file}: {str(e)}")
 
-    for ckpt in glob.glob("lightning_logs/*/checkpoints/*.ckpt"):
+    # Wildcard artifact groups (Phase-3: fully sanitize the workspace between
+    # fresh runs so stale seed panels / ablation panels never leak forward).
+    stale_globs = [
+        "test_tft_predictions_seed_*.csv",
+        "test_tft_predictions_panel_seed_*.csv",
+        "ablation_ens_panel_*.csv",
+    ]
+    for pattern in stale_globs:
+        for f in glob.glob(pattern):
+            try:
+                os.remove(f)
+                print(f"  -> Deleted stale file: {f}")
+            except Exception as e:
+                print(f"  [WARNING] Could not purge {f}: {str(e)}")
+
+    for ckpt in (glob.glob("lightning_logs/*/checkpoints/*.ckpt")
+                 + glob.glob("checkpoints/*.ckpt")):
         try:
             os.remove(ckpt)
             print(f"  -> Purged abandoned checkpoint: {ckpt}")
@@ -200,9 +219,17 @@ def rolling_gjr_garch_pit(returns_series):
     # Default to standard normal quantile until first successful skew-t refit
     last_q_dist = -2.326
 
-    # Convergence accounting (Round 23): never silently swallow MLE failures.
+    # Convergence accounting (Round 23 + Phase-3 fix): never silently swallow
+    # MLE failures AND never assume "no exception == converged". The arch
+    # optimizer exposes a convergence_flag; only flag==0 means the optimizer
+    # actually converged. Tri-state accounting:
+    #   converged       -> flag == 0, parameters updated
+    #   non_converged   -> fit returned but flag != 0, PREVIOUS params retained
+    #   exceptions      -> fit raised, previous params retained
     refit_attempts = 0
-    refit_failures = 0
+    refit_converged = 0
+    refit_non_converged = 0
+    refit_exceptions = 0
 
     print(f"  -> Running PIT rolling GJR-GARCH across {T} periods (warm-up: {lookback} days)...")
 
@@ -213,7 +240,15 @@ def rolling_gjr_garch_pit(returns_series):
             train_slice = returns_series.iloc[t - lookback : t]
             am = arch_model(train_slice, mean="Constant", vol="Garch", p=1, o=1, q=1, dist="skewt")
             try:
-                current_res = am.fit(disp="off", show_warning=False)
+                candidate_res = am.fit(disp="off", show_warning=False)
+                conv_flag = int(getattr(candidate_res, "convergence_flag", 0))
+                if conv_flag != 0:
+                    # Optimizer did NOT converge. Reject the refit: retain the
+                    # previous parameters (strict point-in-time honesty).
+                    refit_non_converged += 1
+                    continue
+                current_res = candidate_res
+                refit_converged += 1
                 params = current_res.params
                 last_params = {
                     "mu": float(params.get("mu", 0.0)),
@@ -233,9 +268,8 @@ def rolling_gjr_garch_pit(returns_series):
                 lam = shape["lambda"] if not np.isnan(shape["lambda"]) else 0.0
                 last_q_dist = float(current_res.model.distribution.ppf(0.01, [nu, lam]))
             except Exception:
-                # Retain previous parameters if numerical MLE fails -- but
-                # COUNT the failure so it is never silent (Round 23).
-                refit_failures += 1
+                # Numerical MLE exception. Retain previous parameters and count.
+                refit_exceptions += 1
 
         # FIX 12.2: If the VERY FIRST fit never succeeded (current_res is None),
         # there are no parameters to recurse with -- skip this day rather than
@@ -263,10 +297,11 @@ def rolling_gjr_garch_pit(returns_series):
         resid_arr[t] = (returns_series.iloc[t] - last_params["mu"]) / sigma_t
         var99_arr[t] = last_params["mu"] + sigma_t * last_q_dist
 
-    # Convergence summary (Round 23): never let failures be silent.
+    # Convergence summary (Phase 3): tri-state, never silent.
     print(f"  -> PIT GARCH refits: {refit_attempts} attempted, "
-          f"{refit_attempts - refit_failures} converged, {refit_failures} failed "
-          f"(previous parameters retained on failure).")
+          f"{refit_converged} converged, {refit_non_converged} non-converged "
+          f"(flag!=0, params retained), {refit_exceptions} exceptions "
+          f"(params retained).")
 
     return (
         pd.Series(vol_arr, index=returns_series.index),

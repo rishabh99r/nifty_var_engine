@@ -1,41 +1,36 @@
 # ablation_runner.py
 # =============================================================================
-# Phase 2: Feature Ablation Tournament
-# Isolates the predictive alpha of econometric and macro priors.
+# Phase 2 (final): Definitive 6-Arm Feature Ablation Tournament
+# =============================================================================
+# Isolates the predictive alpha of econometric and macro priors under a
+# strict progression:
 #
-# AUDITED (against tft_model.py / metrics.py / pytorch-forecasting 0.10+):
-#   FIX 1 (FATAL): PTF >= 0.9 returns a 5-field `Prediction` namedtuple from
-#         predict(mode="quantiles", return_index=True), NOT a 2-tuple. The
-#         original `preds, index_df = tft.predict(...)` raised
-#         "ValueError: too many values to unpack (expected 2)".  Handled
-#         defensively like the champion code (tft_model.generate_and_save_predictions).
-#   FIX 2 (validity): panels were fed to calculate_metrics() UNSORTED. Kupiec
-#         is order-free, but Christoffersen (transition counts), Engle-Manganelli
-#         DQ (lagged hits) and the Diebold-Mariano HAC autocovariances ALL assume
-#         strict chronological order per asset. Sort by Date/ticker first.
-#   FIX 3 (robustness): assert prediction rows are unique per (time_idx, ticker)
-#         and that the GARCH-VaR merge drops no rows (mirror of FIX 12.4 in
-#         tft_model.py) -- otherwise a NaN GARCH column silently shrinks a seed
-#         panel and corrupts the cross-seed ensemble.
-#   FIX 4 (hygiene): restore the ORIGINAL tft_model.build_datasets after each
-#         configuration so a failure inside one arm cannot bleed its feature
-#         lists into the next arm.
-#   FIX 5 (completeness): append the GJR-GARCH baseline (already validated
-#         elsewhere) as arm "0_GJR_GARCH_Baseline" on the SAME out-of-sample
-#         window, so ablation_tournament_results.csv is the full 4-way table:
-#         Baseline | Raw TFT | Conditioned TFT | Full ECTFT.
+#   0  Skew-t GJR-GARCH benchmark (not a TFT)
+#   1  Raw TFT                       known: []                       (returns+GK)
+#   2  GARCH-TFT                     known: [GARCH_sigma]
+#   3  +US cross-border              known: [GARCH_sigma, US_VIX_Diff]
+#   4  +India domestic               known: [GARCH_sigma, India_VIX_Diff]
+#   5  Full ECTFT                    known: [GARCH_sigma, US_VIX_Diff, India_VIX_Diff]
 #
-# METHODOLOGY NOTES:
-#   - time_idx is excluded from the feature lists of ALL arms so no variant can
-#     learn an absolute calendar-time shortcut (Reviewer 3 hypothesis). Note
-#     PTF still injects the BOUNDED positional identifiers
-#     relative_time_idx (-encoder..0) and encoder_length because
-#     add_relative_time_idx=True / add_encoder_length=True. Those are window-
-#     relative, reset per sequence, and identical across arms -- they do not
-#     reintroduce the unbounded absolute time trend that time_idx carried.
-#   - DM convention (metrics.diebold_mariano_test): d_t = L_TFT - L_GARCH, so a
-#     NEGATIVE dm_stat / mean_loss_diff means the TFT variant is BETTER than the
-#     GJR-GARCH baseline. The baseline arm compares GARCH against itself (dm=0).
+# All TFT arms share the SAME unknown reals [Log_Ret_Feature, GK_Vol], the SAME
+# temporal split, architecture, seeds [42,123,777] and OOS horizon. time_idx is
+# NOT a feature in any arm (canonical == Full ECTFT; see tft_model.py header).
+#
+# Phase-3 hardening (Reviewer):
+#   - No monkey-patching: known/unknown features are passed EXPLICITLY to
+#     train_tft() (monkey-patch eliminated).
+#   - Per-seed results are saved (initiation sensitivity, Reviewer #31).
+#   - Ensemble = mean-of-seed quantile forecast (Reviewer #8); the q0.01/q0.50/
+#     q0.99 hierarchy is AUDITED on every seed AND on the averaged ensemble
+#     (Reviewer #9).
+#   - Direct paired DM comparisons (Full vs GARCH-TFT, Full vs GARCH, US-only
+#     vs GARCH-TFT, India-only vs GARCH-TFT) are reported with Holm-Bonferroni
+#     p-values adjusted within each 3-asset comparison family (Reviewer #32).
+#   - Robust PTF predict() unpacking via predict_utils.unpack_predictions.
+#
+# DM sign convention (metrics.diebold_mariano_test):
+#   d_t = L_second - L_first   -> NEGATIVE dm = second model better.
+# For "vs GJR-GARCH" rows the columns are labelled (neg=TFT better).
 # =============================================================================
 import os
 import sys
@@ -45,148 +40,62 @@ import pandas as pd
 
 import config
 import tft_model
-from metrics import calculate_metrics
+from tft_model import train_tft
+from metrics import calculate_metrics, diebold_mariano_test, holm_bonferroni, audit_quantile_monotonicity
+from predict_utils import unpack_predictions
+
+ASSETS = list(config.TICKERS.keys())
+SEEDS = list(config.VALIDATION_SEEDS)
+
+# Baseline columns merged from master_df onto every forecast panel.
+BASELINE_GARCH_COL = "GARCH_VaR_99"
 
 # ----------------------------------------------------------------------------
-# Feature sets for the tournament. 'time_idx' is intentionally EXCLUDED from
-# every arm (see header). GARCH_VaR_99 / Log_Ret remain the comparison baseline
-# and the target respectively -- never listed as model features.
+# Tournament specification (arm key -> known features). Unknown features are
+# constant across arms. Arm 0 (GJR-GARCH) is not a TFT and is handled by
+# evaluate_garch_baseline().
 # ----------------------------------------------------------------------------
+TFT_UNKNOWN_FEATURES = ["Log_Ret_Feature", "GK_Vol"]
+
 ABLATION_CONFIGS = {
-    "1_Raw_TFT": {
-        "known": [],
-        "unknown": ["Log_Ret_Feature", "GK_Vol"],
-    },
-    "2_GARCH_TFT": {
-        "known": ["GARCH_sigma"],
-        "unknown": ["Log_Ret_Feature", "GK_Vol"],
-    },
-    "3_Full_ECTFT": {
-        "known": ["GARCH_sigma", "US_VIX_Diff", "India_VIX_Diff"],
-        "unknown": ["Log_Ret_Feature", "GK_Vol"],
-    },
+    "1_Raw_TFT":          {"known": []},
+    "2_GARCH_TFT":        {"known": ["GARCH_sigma"]},
+    "3_US_VIX_TFT":       {"known": ["GARCH_sigma", "US_VIX_Diff"]},
+    "4_India_VIX_TFT":    {"known": ["GARCH_sigma", "India_VIX_Diff"]},
+    "5_Full_ECTFT":       {"known": ["GARCH_sigma", "US_VIX_Diff", "India_VIX_Diff"]},
 }
 
-ASSETS = list(config.TICKERS.keys())          # NIFTY50, BANKNIFTY, NIFTYIT
-TFT_VAR_COL = "TFT_VaR_99"
+# Pre-specified direct paired comparisons: (comparison_label, first_arm_or_col,
+# second_arm_or_col). DM is computed as d_t = L(second) - L(first), so a
+# NEGATIVE dm_stat means the SECOND model has lower pinball loss.
+PAIRWISE_COMPARISONS = [
+    ("Full ECTFT vs GARCH-TFT",     "5_Full_ECTFT",  "2_GARCH_TFT"),
+    ("Full ECTFT vs GJR-GARCH",     "5_Full_ECTFT",  "__GARCH__"),
+    ("US-only vs GARCH-TFT",        "3_US_VIX_TFT",  "2_GARCH_TFT"),
+    ("India-only vs GARCH-TFT",     "4_India_VIX_TFT", "2_GARCH_TFT"),
+]
+
+Q_COLS = ["TFT_q01", "TFT_q50", "TFT_q99"]
 
 
 # ----------------------------------------------------------------------------
-# Monkey-patch of tft_model.build_datasets -> dynamic feature lists.
-# Signature must match the original (df, encoder_length, backtest_days, val_days).
+# Scoring helpers
 # ----------------------------------------------------------------------------
-def inject_custom_datasets(known_features, unknown_features):
-    from pytorch_forecasting import TimeSeriesDataSet
-
-    def custom_build_datasets(df, encoder_length=None, backtest_days=None, val_days=None):
-        if backtest_days is None:
-            backtest_days = config.BACKTEST_DAYS
-        if encoder_length is None or isinstance(encoder_length, bool):
-            encoder_length = config.ENCODER_LENGTH
-        if val_days is None:
-            val_days = config.VAL_DAYS
-
-        df = df.copy().reset_index(drop=True)
-        df["ticker"] = df["ticker"].astype(str)
-
-        max_idx = df["time_idx"].max()
-        test_cutoff = max_idx - backtest_days
-        val_cutoff = test_cutoff - val_days
-
-        valid_known = [c for c in known_features if c in df.columns]
-        valid_unknown = [c for c in unknown_features if c in df.columns]
-
-        train_df = df[df["time_idx"] <= val_cutoff].reset_index(drop=True)
-
-        training_dataset = TimeSeriesDataSet(
-            train_df,
-            time_idx="time_idx",
-            target="Log_Ret",
-            group_ids=["ticker"],
-            static_categoricals=["ticker"],
-            min_encoder_length=encoder_length,
-            max_encoder_length=encoder_length,
-            min_prediction_length=1,
-            max_prediction_length=1,
-            time_varying_known_categoricals=[],
-            time_varying_known_reals=valid_known,
-            time_varying_unknown_reals=valid_unknown,
-            add_relative_time_idx=True,
-            add_target_scales=True,
-            add_encoder_length=True,
-            allow_missing_timesteps=True,
-        )
-
-        val_df = df[
-            (df["time_idx"] > val_cutoff - encoder_length) & (df["time_idx"] <= test_cutoff)
-        ].reset_index(drop=True)
-        validation_dataset = TimeSeriesDataSet.from_dataset(
-            training_dataset, val_df, predict=False, stop_randomization=True
-        )
-
-        test_df = df[df["time_idx"] > test_cutoff - encoder_length].reset_index(drop=True)
-        test_dataset = TimeSeriesDataSet.from_dataset(
-            training_dataset, test_df, predict=False, stop_randomization=True
-        )
-
-        return training_dataset, validation_dataset, test_dataset, test_cutoff
-
-    # Keep the pristine function for restoration after each arm.
-    inject_custom_datasets._original = tft_model.build_datasets
-    tft_model.build_datasets = custom_build_datasets
+def _score_panel(panel, asset, tft_var_col="TFT_q01"):
+    """
+    Runs the full metrics battery on one (already chronological per-asset)
+    panel by aliasing the requested TFT column to TFT_VaR_99.
+    Returns the calculate_metrics dict.
+    """
+    sub = panel[panel["ticker"] == asset].sort_values(by="time_idx").copy()
+    sub["TFT_VaR_99"] = sub[tft_var_col]
+    return calculate_metrics(sub)
 
 
-def restore_build_datasets():
-    """Restore the pristine tft_model.build_datasets (defensive against bleed)."""
-    original = getattr(inject_custom_datasets, "_original", None)
-    if original is not None:
-        tft_model.build_datasets = original
-
-
-# ----------------------------------------------------------------------------
-# Predict-unpacking that is robust across PTF versions:
-#   >= 0.9 : Prediction namedtuple(output, x, index, decoder_lengths, y)
-#   <  0.9 : tuple (output, index)
-# Mirrors the defensive handling in tft_model.generate_and_save_predictions().
-# ----------------------------------------------------------------------------
-def unpack_predictions(result):
-    if hasattr(result, "output") and hasattr(result, "index"):
-        pred_values = result.output.cpu().numpy()
-        index_df = result.index.copy()
-    elif isinstance(result, (tuple, list)) and len(result) >= 2:
-        pred_values = result[0].cpu().numpy()
-        index_df = result[1].copy()
-    else:
-        raise TypeError(
-            f"Unexpected predict() return type {type(result)}. "
-            "Expected a PTF Prediction namedtuple or a (output, index) tuple."
-        )
-    return pred_values, index_df
-
-
-# ----------------------------------------------------------------------------
-# GJR-GARCH baseline on the SAME out-of-sample window used by the TFT arms.
-# DM fields are self-comparison (0 / p=1.0), included only to anchor the table.
-# ----------------------------------------------------------------------------
-def evaluate_garch_baseline(master_df):
-    max_idx = master_df["time_idx"].max()
-    test_cutoff = max_idx - config.BACKTEST_DAYS  # same OOS window as build_datasets
-    oos = master_df[master_df["time_idx"] > test_cutoff].copy()
-    oos = oos.dropna(subset=["Log_Ret", "GARCH_VaR_99"])
-
-    rows = []
-    for ticker in ASSETS:
-        sub = oos[oos["ticker"] == ticker].sort_values(by="Date").copy()
-        sub[TFT_VAR_COL] = sub["GARCH_VaR_99"]  # baseline evaluated against itself
-        m = calculate_metrics(sub)
-        rows.append(_format_metrics_row("0_GJR_GARCH_Baseline", ticker, m))
-    return rows
-
-
-def _format_metrics_row(model_name, ticker, m):
+def _format_row(model_label, asset, m):
     return {
-        "Model Variant": model_name,
-        "Asset": ticker,
+        "Model Variant": model_label,
+        "Asset": asset,
         "Breaches": m["breaches"],
         "Total Obs": m["total_obs"],
         "Kupiec p-value": round(m["kupiec_p_value"], 4),
@@ -196,116 +105,256 @@ def _format_metrics_row(model_name, ticker, m):
     }
 
 
+def _chrono_panel(panel):
+    """Sort by ticker then time_idx; Date parsed once for downstream join."""
+    out = panel.copy()
+    out["Date"] = pd.to_datetime(out["Date"])
+    return out.sort_values(by=["ticker", "time_idx"]).reset_index(drop=True)
+
+
 # ----------------------------------------------------------------------------
-# Main tournament
+# Arm 0: GJR-GARCH baseline on the same OOS window used by every TFT arm.
+# DM fields are a self-comparison (0 / p=1.0) included only to anchor the table.
+# ----------------------------------------------------------------------------
+def build_garch_oos_panel(master_df):
+    max_idx = master_df["time_idx"].max()
+    test_cutoff = max_idx - config.BACKTEST_DAYS
+    oos = master_df[master_df["time_idx"] > test_cutoff].copy()
+    oos = oos.dropna(subset=["Log_Ret", "GARCH_VaR_99"])
+    return _chrono_panel(oos)
+
+
+def evaluate_garch_baseline(master_df):
+    oos = build_garch_oos_panel(master_df)
+    rows = []
+    for ticker in ASSETS:
+        sub = oos[oos["ticker"] == ticker].sort_values(by="time_idx").copy()
+        sub["TFT_VaR_99"] = sub[BASELINE_GARCH_COL]
+        m = calculate_metrics(sub)
+        rows.append(_format_row("0_GJR_GARCH_Baseline", ticker, m))
+    return rows, oos
+
+
+# ----------------------------------------------------------------------------
+# Tournament main
 # ----------------------------------------------------------------------------
 def run_tournament():
-    print("===== PHASE 2: ABLATION TOURNAMENT =====")
-
+    print("===== PHASE 2: DEFINITIVE 6-ARM ABLATION TOURNAMENT =====")
     if not os.path.exists("master_df.csv"):
         sys.exit("[FATAL] master_df.csv not found. Run 'python build_data.py' first.")
 
     master_df = pd.read_csv("master_df.csv")
     print(f"[LOAD] master_df.csv: {len(master_df)} rows across "
           f"{master_df['ticker'].nunique()} tickers.")
+    print(f"[SPEC] Seeds: {SEEDS} | Unknown reals (all TFT arms): {TFT_UNKNOWN_FEATURES}")
+    print(f"[SPEC] time_idx is NOT a feature in any arm (canonical == Full ECTFT).")
 
-    results = evaluate_garch_baseline(master_df)
-    print("\n>>> BASELINE (GJR-GARCH, self-reference on OOS window) complete. <<<")
+    # ---- Arm 0: GJR-GARCH benchmark -------------------------------------
+    ensemble_results = []
+    seed_results = []
+    baseline_rows, garch_oos = evaluate_garch_baseline(master_df)
+    ensemble_results.extend(baseline_rows)
+    print("\n>>> BASELINE (Skew-t GJR-GARCH, self-reference on OOS window) complete. <<<")
 
-    for model_name, features in ABLATION_CONFIGS.items():
-        print(f"\n>>> RUNNING CONFIGURATION: {model_name} <<<")
-        print(f"Features -> Known: {features['known']} | Unknown: {features['unknown']}")
+    # ---- Per-arm training -------------------------------------------------
+    arm_ensembles = {}          # arm -> ensemble panel (chronological)
+    arm_seed_panels = {}        # arm -> {seed: panel}
 
-        inject_custom_datasets(features["known"], features["unknown"])
-        seed_panels = []
+    for arm, features in ABLATION_CONFIGS.items():
+        print(f"\n>>> RUNNING CONFIGURATION: {arm} <<<")
+        print(f"    Known: {features['known']} | Unknown: {TFT_UNKNOWN_FEATURES}")
 
-        try:
-            for seed in config.VALIDATION_SEEDS:
-                print(f"  -> Training Seed {seed}...", flush=True)
-                tft, trainer, best_score, val_dl, test_dl = train_tft(
-                    df=master_df,
-                    seed=seed,
-                    enable_progress_bar=False,
+        seed_panels = {}
+        for seed in SEEDS:
+            print(f"  -> Training Seed {seed}...", flush=True)
+            tft, trainer, best_score, val_dl, test_dl = train_tft(
+                df=master_df,
+                seed=seed,
+                enable_progress_bar=False,
+                known_features=features["known"],
+                unknown_features=TFT_UNKNOWN_FEATURES,
+            )
+
+            res = tft.predict(test_dl, mode="quantiles", return_index=True)
+            pred_values, index_df = unpack_predictions(res)
+
+            dup = index_df.duplicated(subset=["time_idx", "ticker"]).sum()
+            if dup:
+                raise RuntimeError(f"[FATAL] {arm} seed {seed}: {dup} duplicate prediction rows.")
+            n_pred = len(index_df)
+
+            pred_df = index_df.copy()
+            pred_df["TFT_q01"] = pred_values[:, 0, 0]
+            pred_df["TFT_q50"] = pred_values[:, 0, 1]
+            pred_df["TFT_q99"] = pred_values[:, 0, 2]
+
+            # Merge with GARCH baselines for the DM comparison.
+            panel_meta = master_df[
+                ["time_idx", "ticker", "Date", "Log_Ret", BASELINE_GARCH_COL]
+            ].copy()
+            merged = pred_df.merge(panel_meta, on=["time_idx", "ticker"], how="inner")
+            if len(merged) != n_pred:
+                raise RuntimeError(
+                    f"[FATAL] {arm} seed {seed}: merge dropped {n_pred - len(merged)} rows. "
+                    "Check master_df for NaNs in GARCH_VaR_99 on the OOS horizon."
                 )
+            merged = _chrono_panel(merged)
 
-                res = tft.predict(test_dl, mode="quantiles", return_index=True)
-                pred_values, index_df = unpack_predictions(res)
+            # Quantile-crossing audit on THIS seed's raw output.
+            audit = audit_quantile_monotonicity(
+                merged["TFT_q01"], merged["TFT_q50"], merged["TFT_q99"],
+                raise_on_violation=True,
+            )
+            print(f"  -> Seed {seed}: {len(merged)} OOS rows | crossing audit: "
+                  f"{audit['violations_lo'] + audit['violations_hi']} violations")
 
-                # FIX 3a: no duplicate (ticker, time_idx) rows from the DataLoader.
-                dup = index_df.duplicated(subset=["time_idx", "ticker"]).sum()
-                if dup:
-                    raise RuntimeError(f"[FATAL] Seed {seed}: {dup} duplicate prediction rows.")
-                n_pred = len(index_df)
+            seed_panels[seed] = merged
 
-                pred_df = index_df.copy()
-                pred_df[TFT_VAR_COL] = pred_values[:, 0, 0]  # q = 0.01
+            # Seed-level results (initiation sensitivity, Reviewer #31).
+            for ticker in ASSETS:
+                m = _score_panel(merged, ticker, tft_var_col="TFT_q01")
+                row = {"Model Variant": arm, "Asset": ticker, "Seed": int(seed),
+                       "Breaches": m["breaches"], "Total Obs": m["total_obs"],
+                       "Kupiec p-value": round(m["kupiec_p_value"], 4),
+                       "DM Stat (neg=TFT)": round(m["dm_stat"], 4),
+                       "DM p-value": round(m["dm_p_value"], 4),
+                       "Mean Loss Diff": round(m["mean_loss_diff"], 6)}
+                seed_results.append(row)
+            print(f"  -> Seed {seed} scored.", flush=True)
 
-                # Merge with GARCH baselines for the DM comparison.
-                panel_meta = master_df[
-                    ["time_idx", "ticker", "Date", "Log_Ret", "GARCH_VaR_99"]
-                ].copy()
-                merged = pred_df.merge(panel_meta, on=["time_idx", "ticker"], how="inner")
+        arm_seed_panels[arm] = seed_panels
 
-                # FIX 3b: mirror of tft_model FIX 12.4 -- a dropped row (e.g. NaN
-                # GARCH column on a test day) would silently corrupt the ensemble.
-                if len(merged) != n_pred:
-                    raise RuntimeError(
-                        f"[FATAL] Seed {seed}: merge dropped {n_pred - len(merged)} rows. "
-                        "Check master_df for NaNs in GARCH_VaR_99 on the OOS horizon."
-                    )
-
-                seed_panels.append(merged)
-                print(f"  -> Seed {seed}: {len(merged)} OOS rows.", flush=True)
-        finally:
-            # FIX 4: never let one arm's feature lists leak into the next arm.
-            restore_build_datasets()
-
-        # --- 3-Seed ensemble for this configuration (mean of q0.01 per cell) ---
-        lengths = {len(p) for p in seed_panels}
+        # ---- Ensemble = mean-of-seed quantile forecast -------------------
+        print(f"  -> Ensembling {arm} across {len(SEEDS)} seeds...")
+        lengths = {len(p) for p in seed_panels.values()}
         if len(lengths) != 1:
-            raise RuntimeError(f"[FATAL] {model_name}: seed panels differ in length: {lengths}")
+            raise RuntimeError(f"[FATAL] {arm}: seed panels differ in length: {lengths}")
 
-        print(f"  -> Ensembling {model_name} across {len(seed_panels)} seeds...")
-        ens_panel = seed_panels[0].copy()
-        for i in range(1, len(seed_panels)):
-            ens_panel = ens_panel.merge(
-                seed_panels[i][["time_idx", "ticker", TFT_VAR_COL]],
+        ens = seed_panels[SEEDS[0]].copy()
+        for i, seed in enumerate(SEEDS[1:], start=1):
+            ens = ens.merge(
+                seed_panels[seed][["time_idx", "ticker"] + Q_COLS],
                 on=["time_idx", "ticker"],
                 suffixes=("", f"_s{i}"),
                 how="inner",
             )
+        if len(ens) != len(seed_panels[SEEDS[0]]):
+            raise RuntimeError(f"[FATAL] {arm}: ensemble merge lost rows.")
 
-        if len(ens_panel) != len(seed_panels[0]):
-            raise RuntimeError(f"[FATAL] {model_name}: ensemble merge lost rows.")
+        for qcol in Q_COLS:
+            cols_to_avg = [qcol] + [f"{qcol}_s{i}" for i in range(1, len(SEEDS))]
+            ens[qcol] = ens[cols_to_avg].mean(axis=1)
+        ens = _chrono_panel(ens[["time_idx", "ticker", "Date", "Log_Ret",
+                                BASELINE_GARCH_COL] + Q_COLS])
 
-        cols_to_avg = [TFT_VAR_COL] + [f"{TFT_VAR_COL}_s{i}" for i in range(1, len(seed_panels))]
-        ens_panel[TFT_VAR_COL] = ens_panel[cols_to_avg].mean(axis=1)
+        # Quantile-crossing audit on the AVERAGED ensemble output.
+        audit_ens = audit_quantile_monotonicity(
+            ens["TFT_q01"], ens["TFT_q50"], ens["TFT_q99"], raise_on_violation=True,
+        )
+        print(f"  -> Ensemble crossing audit: "
+              f"{audit_ens['violations_lo'] + audit_ens['violations_hi']} violations")
 
-        # Drop the per-seed q0.01 duplicates left over by the suffix merge.
-        keep_cols = ["time_idx", "ticker", "Date", "Log_Ret", "GARCH_VaR_99", TFT_VAR_COL]
-        ens_panel = ens_panel[keep_cols].copy()
+        out_panel = f"ablation_ens_panel_{arm}.csv"
+        ens.to_csv(out_panel, index=False)
+        _mirror_to_output_dir(out_panel)
+        print(f"  -> Ensemble panel ({len(ens)} rows) written to {out_panel}")
+        arm_ensembles[arm] = ens
 
-        # FIX 2: chronological order per asset BEFORE any time-series test.
-        ens_panel["Date"] = pd.to_datetime(ens_panel["Date"])
-        ens_panel = ens_panel.sort_values(by=["Date", "ticker"]).reset_index(drop=True)
-
-        # Persist each arm's ensemble panel for reproducibility / audit plots.
-        out_panel = f"ablation_ens_panel_{model_name}.csv"
-        ens_panel.to_csv(out_panel, index=False)
-        print(f"  -> Ensemble panel ({len(ens_panel)} rows) written to {out_panel}")
-
-        # --- Evaluate the ensemble per asset ---
+        # ---- Ensemble-level vs GJR-GARCH results --------------------------
         for ticker in ASSETS:
-            sub = ens_panel[ens_panel["ticker"] == ticker].copy()
-            m = calculate_metrics(sub)
-            results.append(_format_metrics_row(model_name, ticker, m))
+            m = _score_panel(ens, ticker, tft_var_col="TFT_q01")
+            ensemble_results.append(_format_row(arm, ticker, m))
 
-    results_df = pd.DataFrame(results)
-    results_df.to_csv("ablation_tournament_results.csv", index=False)
+    # ---- Direct paired DM table (Reviewer's key comparison) ---------------
+    print("\n=== DIRECT PAIRED DM COMPARISONS (Holm-adjusted within 3-asset family) ===")
+    pairwise_rows = _build_pairwise_table(arm_ensembles, garch_oos, master_df)
+    pairwise_df = pd.DataFrame(pairwise_rows)
+    pairwise_df.to_csv("ablation_pairwise_dm.csv", index=False)
+    print(pairwise_df.to_string(index=False))
 
-    print("\n================ ABLATION TOURNAMENT RESULTS ================")
-    print(results_df.to_string(index=False))
-    print("=============================================================")
+    # ---- Persist result tables --------------------------------------------
+    ensemble_df = pd.DataFrame(ensemble_results)
+    ensemble_df.to_csv("ablation_tournament_results.csv", index=False)
+    seed_df = pd.DataFrame(seed_results)
+    seed_df.to_csv("ablation_seed_level_results.csv", index=False)
+    _mirror_to_output_dir("ablation_tournament_results.csv")
+    _mirror_to_output_dir("ablation_seed_level_results.csv")
+    _mirror_to_output_dir("ablation_pairwise_dm.csv")
+
+    print("\n================ ABLATION TOURNAMENT RESULTS (ENSEMBLE) ================")
+    print(ensemble_df.to_string(index=False))
+    print("========================================================================")
+    print("\nPer-seed results written to ablation_seed_level_results.csv")
+    print("Pairwise DM table written to ablation_pairwise_dm.csv")
+
+
+def _mirror_to_output_dir(filename):
+    """
+    Mirrors a workspace artifact into config.OUTPUT_DIR (the GARCH_TFT_Results
+    folder -- Google Drive when mounted, else a local dir) so every tournament
+    CSV/report is deposited alongside the figures and checkpoints.
+    """
+    import shutil
+
+    src = filename
+    if not os.path.exists(src):
+        return
+    try:
+        os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+        shutil.copy2(src, os.path.join(config.OUTPUT_DIR, os.path.basename(src)))
+        print(f"  -> Mirrored {src} -> {os.path.join(config.OUTPUT_DIR, os.path.basename(src))}")
+    except Exception as e:
+        print(f"  [WARN] Could not mirror {src} to OUTPUT_DIR: {e}")
+
+
+def _build_pairwise_table(arm_ensembles, garch_oos, master_df):
+    """
+    Computes the direct paired DM tests on the ENSEMBLE q0.01 forecast series
+    (one loss per OOS day, aligned per asset), plus Holm-corrected p-values.
+    """
+    rows = []
+    for label, first_arm, second_arm in PAIRWISE_COMPARISONS:
+        family_p = []          # raw p per asset (for Holm within the family)
+        family_asset = []
+        for ticker in ASSETS:
+            first_df = _align_pair(arm_ensembles, garch_oos, first_arm, ticker)
+            second_df = _align_pair(arm_ensembles, garch_oos, second_arm, ticker)
+
+            actual = first_df["Log_Ret"].values
+            first_var = first_df["TFT_q01"].values
+            second_var = second_df["TFT_q01"].values
+
+            # DM convention: d_t = L(second) - L(first); negative => second better.
+            dm = diebold_mariano_test(actual, first_var, second_var, q=0.01)
+            family_p.append(dm["dm_p_value"])
+            family_asset.append(ticker)
+            rows.append({
+                "Comparison": label,
+                "Asset": ticker,
+                "DM Stat (neg=2nd better)": round(dm["dm_stat"], 4),
+                "DM p-value (raw)": round(dm["dm_p_value"], 4),
+                "Mean Loss Diff (2nd-1st)": round(dm["mean_diff"], 6),
+                "Holm p (3-asset family)": np.nan,  # filled after family completes
+            })
+        # Holm-Bonferroni within this 3-asset comparison family.
+        adj = holm_bonferroni(family_p)
+        for i, ticker in enumerate(family_asset):
+            for r in rows:
+                if r["Comparison"] == label and r["Asset"] == ticker:
+                    r["Holm p (3-asset family)"] = round(float(adj[i]), 4)
+    return rows
+
+
+def _align_pair(arm_ensembles, garch_oos, arm_key, ticker):
+    """Returns the q01/actual/GARCH series for one asset from either a TFT arm
+    ensemble panel or the GJR-GARCH OOS baseline."""
+    if arm_key == "__GARCH__":
+        src = garch_oos
+        sub = src[src["ticker"] == ticker].sort_values(by="time_idx").copy()
+        sub["TFT_q01"] = sub[BASELINE_GARCH_COL]
+        return sub.reset_index(drop=True)
+    src = arm_ensembles[arm_key]
+    return src[src["ticker"] == ticker].sort_values(by="time_idx").reset_index(drop=True)
 
 
 if __name__ == "__main__":

@@ -45,10 +45,16 @@ def set_seed(seed):
 # NOTE: ^INDIAVIX has limited history on Yahoo Finance. If coverage is
 # insufficient we fall back to an honestly-labelled realized-volatility proxy.
 START_DATE = "2015-01-01"
-# END_DATE is DYNAMIC: in production it resolves to "today" at runtime so the
-# buffer always reflects the latest available trading day. A fixed research
-# cut-off can be passed explicitly (e.g. build_data.generate_clean_production_data(end_date=...)).
-END_DATE = datetime.date.today().isoformat()
+# RESEARCH CUTOFF (FROZEN): the final empirical run must never drift with
+# wall-clock time. All research scripts (build_data.py / main.py /
+# ablation_runner.py / generate_report_plots.py) default END_DATE to this
+# constant so the manuscript results are exactly reproducible.
+RESEARCH_END_DATE = "2026-09-07"
+END_DATE = RESEARCH_END_DATE
+
+# PRODUCTION end date: dynamic "today" is reserved for the deployment path only
+# (deployment.py passes this explicitly) -- research runs stay frozen.
+PRODUCTION_END_DATE = datetime.date.today().isoformat()
 
 TICKERS = {
     "NIFTY50": "^NSEI",

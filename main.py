@@ -24,10 +24,15 @@ import config
 from metrics import calculate_metrics, aggregate_seed_metrics
 from tft_model import train_tft, generate_and_save_predictions
 
+# Canonical feature spec == ablation "Full ECTFT" arm (Phase-3 fix: no time_idx).
+from tft_model import DEFAULT_KNOWN_FEATURES, DEFAULT_UNKNOWN_FEATURES
+
 CHAMPION_PARAMS = {
     "hidden_size": config.HIDDEN_SIZE,
     "dropout": config.DROPOUT,
     "learning_rate": config.LEARNING_RATE,
+    "known_features": list(DEFAULT_KNOWN_FEATURES),
+    "unknown_features": list(DEFAULT_UNKNOWN_FEATURES),
 }
 
 
@@ -109,6 +114,8 @@ def main():
             encoder_length=config.ENCODER_LENGTH,
             backtest_days=config.BACKTEST_DAYS,
             enable_progress_bar=True,
+            known_features=CHAMPION_PARAMS["known_features"],
+            unknown_features=CHAMPION_PARAMS["unknown_features"],
         )
 
         print(f"\n[INFERENCE] Generating out-of-sample test predictions for Seed {seed}...")

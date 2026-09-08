@@ -18,6 +18,7 @@ from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer
 
 import config
 from metrics import extract_garch_dist_params
+from predict_utils import unpack_predictions
 
 warnings.filterwarnings("ignore")
 
@@ -45,8 +46,9 @@ def _infer_quantiles_one_checkpoint(model_checkpoint_path, master_df, target_tic
     )
 
     with torch.no_grad():
-        preds, index_df = tft.predict(inference_dataloader, mode="quantiles", return_index=True)
-        pred_values = preds.cpu().numpy()
+        pred_values, index_df = unpack_predictions(
+            tft.predict(inference_dataloader, mode="quantiles", return_index=True)
+        )
 
     target_row_idx = index_df[index_df["ticker"] == target_ticker].index[0]
     return (
@@ -211,8 +213,9 @@ def run_live_daily_inference(model_checkpoint_path, live_csv_path="master_df.csv
     )
 
     with torch.no_grad():
-        preds, index_df = tft.predict(inference_dataloader, mode="quantiles", return_index=True)
-        pred_values = preds.cpu().numpy()
+        pred_values, index_df = unpack_predictions(
+            tft.predict(inference_dataloader, mode="quantiles", return_index=True)
+        )
 
     target_row_idx = index_df[index_df["ticker"] == target_ticker].index[0]
     raw_tft_var_99 = float(pred_values[target_row_idx, 0, 0])  # q = 0.01

@@ -345,10 +345,10 @@ def export_complete_test_suite(panel_df, garch_params, granger_params):
         rows.append({
             "Asset": sym,
             "Observations": m["total_obs"],
-            "Breaches (median seed)": m["breaches"],
+            "Breaches (3-seed ensemble)": m["breaches"],
             "Expected Breaches": exp_breaches,
             "Breach Rate (%)": f"{breach_pct:.2f}%",
-            "Basel Traffic Light": m["basel_zone"],
+            "Binomial Coverage Zone": m["basel_zone"],
             "Kupiec POF Stat": round(m["kupiec_stat"], 3),
             "Kupiec p-value": round(m["kupiec_p_value"], 4),
             "Christoffersen Stat": round(m["christ_stat"], 3),
@@ -378,9 +378,11 @@ def export_complete_test_suite(panel_df, garch_params, granger_params):
         f.write("      (Econometrically-Conditioned TFT)\n")
         f.write("=" * 80 + "\n\n")
         f.write("NOTE: This table reports the pre-determined 3-seed ENSEMBLE forecast\n")
-        f.write("(mean of the q=0.01 quantile across seeds), not a cherry-picked seed.\n")
-        f.write("Terminology: 'regulatory-inspired 99% VaR backtesting' -- NOT a formal\n")
-        f.write("Basel III/FRTB compliance certification.\n\n")
+        f.write("(mean-of-seed q=0.01 forecast across seeds), not a cherry-picked seed.\n")
+        f.write("Terminology: 'Binomial coverage zone' is a REGULATORY-INSPIRED custom\n")
+        f.write("binomial classification (sample-size adapted), NOT the formal Basel\n")
+        f.write("traffic-light table, and NOT a Basel III/FRTB compliance certification.\n")
+        f.write(f"Frozen research cut-off: {config.RESEARCH_END_DATE}. No time_idx feature.\n\n")
         f.write(audit_table.to_string(index=False))
         f.write("\n\nTAIL NOTE: 'Tail mean std resid (z)' is a descriptive breach-depth\n")
         f.write("diagnostic (mean standardized exceedance). A strongly negative value\n")

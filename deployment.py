@@ -74,9 +74,18 @@ def _run(cmd):
 
 
 def _update_buffer():
-    """Rebuild the master buffer through today (dynamic END_DATE)."""
+    """
+    Rebuild the master buffer through today.
+
+    PRODUCTION path only: uses the DYNAMIC config.PRODUCTION_END_DATE (today)
+    so the served buffer is fresh. Research runs (build_data.py standalone /
+    main.py / ablation_runner.py) stay frozen on config.END_DATE
+    (= RESEARCH_END_DATE) for exact reproducibility.
+    """
     import build_data
-    build_data.generate_clean_production_data(start_date=config.START_DATE, end_date=config.END_DATE)
+    build_data.generate_clean_production_data(
+        start_date=config.START_DATE, end_date=config.PRODUCTION_END_DATE
+    )
 
 
 def run_deployment(do_forecast=True, force_garch_refit=False, force_tft_retrain=False):
@@ -84,10 +93,14 @@ def run_deployment(do_forecast=True, force_garch_refit=False, force_tft_retrain=
     Main manual-trigger entry point.
 
     Steps:
-      1. Rebuild/refresh the master buffer through today.
+      1. Rebuild/refresh the master buffer through today (PRODUCTION end date).
       2. Decide GARCH refit (every 21 trading days) and/or TFT retrain
          (every 126 trading days) based on cadence state.
-      3. Run live inference for the median-seed checkpoint.
+      3. Run live inference from the 3-seed ENSEMBLE checkpoints (manifest-
+         first deterministic discovery).
+
+    NOTE: This is a manual-triggered full-data reconstruction with cadence
+    bookkeeping -- a research prototype, not a stateful GARCH production engine.
 
     Returns a summary dict of actions taken.
     """
@@ -133,7 +146,8 @@ def run_deployment(do_forecast=True, force_garch_refit=False, force_tft_retrain=
         from production_engine import run_live_ensemble_inference
         from tft_model import select_seed_checkpoints
 
-        ckpts = select_seed_checkpoints(config.VALIDATION_SEEDS)
+        # Manifest-first discovery (deterministic), with checkpoints/ fallback.
+        ckpts = select_seed_checkpoints(config.VALIDATION_SEEDS, prefer_manifest=True)
         if not ckpts:
             raise FileNotFoundError(
                 "[DEPLOY] No checkpoints found. Run main.py once to train the TFT first."

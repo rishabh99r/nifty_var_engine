@@ -202,7 +202,20 @@ def extract_garch_dist_params(res):
 
 
 def kupiec_pof_test(actual, var_pred, alpha=0.01):
-    """Kupiec Unconditional Coverage (POF) Likelihood Ratio Test."""
+    """
+    Kupiec Unconditional Coverage (POF) Likelihood Ratio Test.
+
+    STANDARD LR FORM (Phase-3 fix, Reviewer): the boundary case N=0 (zero
+    exceptions) uses the exact likelihood-ratio limit
+        LR_UC = -2*T*ln(1-alpha)
+    which for T=500, alpha=0.01 gives LR≈10.05, p≈0.0015 -- i.e. standard
+    Kupiec correctly REJECTS a hyper-conservative zero-breach model at 5%
+    (it is too conservative to be calibrated at the nominal 1% coverage rate).
+    This is the statistically correct meaning, distinct from practical
+    risk-management judgement. Symmetrically, N=T (all breaches) yields
+    LR_UC = -2*T*ln(alpha), also handled by the general formula with a
+    numerical guard.
+    """
     hits = (actual < var_pred).astype(int)
     N = int(np.sum(hits))
     T = len(hits)
@@ -213,19 +226,17 @@ def kupiec_pof_test(actual, var_pred, alpha=0.01):
     p_hat = N / T
 
     if N == 0:
-        # FIX (Round 17): The previous code returned p = P(X=0) = (1-alpha)^T
-        # (a TINY value, ~0.007 for T=500) and a positive LR stat, which the
-        # LR-CC combination interpreted as a SPURIOUS coverage violation when a
-        # model is simply more conservative than 1% (zero breaches).
-        #
-        # Correct treatment: zero failures is AT LEAST as conservative as the
-        # null (expected count = alpha*T > 0), so the two-sided POF p-value is
-        # the tail probability of observing <= N failures:
-        #     p = 1 - P(X = 0) = 1 - (1-alpha)^T   (LARGE, non-rejecting)
-        # and the LR statistic is set to 0 (no deviation from coverage on the
-        # conservative side), so LR-CC does not spuriously reject.
-        p_under_conservative = 1.0 - (1.0 - alpha) ** T
-        return {"N": 0, "T": T, "p_hat": 0.0, "stat": 0.0, "p_value": float(p_under_conservative)}
+        # Boundary: zero failures. LR -> -2*T*ln(1-alpha) (exact limit).
+        lr_uc = -2.0 * T * np.log(1.0 - alpha)
+        lr_uc = max(lr_uc, 0.0)
+        p_value = 1.0 - stats.chi2.cdf(lr_uc, df=1)
+        return {"N": 0, "T": T, "p_hat": 0.0, "stat": float(lr_uc), "p_value": float(p_value)}
+    if N == T:
+        # Symmetric boundary: all breaches. LR -> -2*T*ln(alpha).
+        lr_uc = -2.0 * T * np.log(alpha)
+        lr_uc = max(lr_uc, 0.0)
+        p_value = 1.0 - stats.chi2.cdf(lr_uc, df=1)
+        return {"N": T, "T": T, "p_hat": 1.0, "stat": float(lr_uc), "p_value": float(p_value)}
 
     num = ((1.0 - alpha) ** (T - N)) * (alpha ** N)
     den = ((1.0 - p_hat) ** (T - N)) * (p_hat ** N)
@@ -237,6 +248,71 @@ def kupiec_pof_test(actual, var_pred, alpha=0.01):
 
     p_value = 1.0 - stats.chi2.cdf(lr_uc, df=1)
     return {"N": N, "T": T, "p_hat": float(p_hat), "stat": float(lr_uc), "p_value": float(p_value)}
+
+
+def holm_bonferroni(p_values):
+    """
+    Holm-Bonferroni step-down multiple-testing correction (family-wise error
+    rate control). Operates on a family of raw p-values IN ANY ORDER and
+    returns adjusted p-values aligned to the input order.
+
+    Method: sort raw p ascending; adjusted_i = max over j<=i of
+    (n - j + 1) * p_(j); enforce monotone non-decreasing; cap at 1.0.
+    """
+    p_raw = np.asarray(p_values, dtype=float).ravel()
+    n = len(p_raw)
+    if n == 0:
+        return np.array([])
+
+    # NaN-safe: NaN p-values are passed through unchanged (never "significant").
+    finite_mask = ~np.isnan(p_raw)
+    adjusted = np.full(n, np.nan)
+    if finite_mask.sum() == 0:
+        return adjusted
+
+    idx = np.where(finite_mask)[0]
+    vals = p_raw[idx]
+    order = np.argsort(vals, kind="mergesort")
+    sorted_p = vals[order]
+    m = len(sorted_p)
+
+    # Step-down Holm: min(1, (m-j+1) * p_(j)), then enforce monotonicity.
+    step = np.minimum(1.0, (m - np.arange(1, m + 1) + 1) * sorted_p)
+    step = np.maximum.accumulate(step)
+    step = np.minimum(step, 1.0)
+
+    adjusted_idx = np.empty(m)
+    adjusted_idx[order] = step
+    adjusted[idx] = adjusted_idx
+    return adjusted
+
+
+def audit_quantile_monotonicity(q01, q50, q99, raise_on_violation=False):
+    """
+    Audits that quantile forecasts obey the monotonicity boundary
+        q0.01 <= q0.50 <= q0.99
+    for every row (quantile regression does NOT enforce this by construction).
+
+    Accepts arrays/Series/DataFrames (aligned by position). Returns
+        {"total": n, "violations_lo": n(q01>q50), "violations_hi": n(q50>q99)}
+    and optionally raises if any violation is found.
+    """
+    a = np.asarray(q01, dtype=float)
+    b = np.asarray(q50, dtype=float)
+    c = np.asarray(q99, dtype=float)
+
+    if not (a.ndim == b.ndim == c.ndim == 1 and len(a) == len(b) == len(c)):
+        raise ValueError("q01/q50/q99 must be 1-D arrays of equal length.")
+
+    total = len(a)
+    viol_lo = int(np.sum(a > b))
+    viol_hi = int(np.sum(b > c))
+    if raise_on_violation and (viol_lo + viol_hi) > 0:
+        raise RuntimeError(
+            f"Quantile crossing detected: {viol_lo + viol_hi}/{total} rows "
+            f"(q01>q50: {viol_lo}, q50>q99: {viol_hi})."
+        )
+    return {"total": total, "violations_lo": viol_lo, "violations_hi": viol_hi}
 
 
 def christoffersen_independence_test(actual, var_pred):

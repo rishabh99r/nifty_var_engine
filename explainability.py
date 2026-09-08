@@ -18,12 +18,19 @@ import numpy as np
 import pandas as pd
 import torch
 from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer
+import matplotlib
+matplotlib.use("Agg")  # headless-safe (Colab / no display)
+import matplotlib.pyplot as plt
 
 import config
+import tft_model  # for the deterministic experiment manifest (checkpoint registry)
 
 OUTPUT_DIR = config.OUTPUT_DIR + "/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# NOTE (Phase-3): 'time_idx' was REMOVED from the canonical feature spec. The
+# entry below is retained ONLY so VSN reports from legacy checkpoints (trained
+# with time_idx) still map cleanly; it will never appear in fresh checkpoints.
 CATEGORY_MAP = {
     "GK_Vol": "Intraday Range Volatility",
     "Log_Ret_Feature": "Autoregressive Target History",
@@ -31,22 +38,34 @@ CATEGORY_MAP = {
     "relative_time_idx": "Temporal Indexing",
     "India_VIX_Diff": "Domestic Volatility (India VIX or RV proxy)",
     "US_VIX_Diff": "Cross-Border Macro Spillover (lagged 2)",
-    "time_idx": "Panel Timeline",
+    "time_idx": "Panel Timeline (legacy checkpoints only)",
 }
 
 
 def _locate_seed_checkpoint(seed):
-    """Find the champion checkpoint for a given seed (local or Drive)."""
-    patterns = [
-        os.path.join(OUTPUT_DIR, f"*seed{seed}*.ckpt"),
-        os.path.join(OUTPUT_DIR, f"*{seed}*.ckpt"),
-        f"*seed{seed}*.ckpt",
-        f"*{seed}*.ckpt",
-    ]
-    for pat in patterns:
-        matches = sorted(glob.glob(pat))
-        if matches:
-            return matches[0]
+    """
+    Find the champion checkpoint for a given seed.
+
+    Manifest-first (deterministic), then a strict search across the local
+    checkpoints/, workspace root and Drive OUTPUT_DIR (Phase-3 hardening --
+    previously the local checkpoints/ dir was never searched).
+    """
+    # 1) Manifest-first (deterministic registry written by train_tft).
+    try:
+        entries = tft_model.load_experiment_manifest(seeds=[seed])
+        if entries:
+            return entries[seed]["checkpoint_path"]
+    except Exception:
+        pass
+    # 2) Strict directory search.
+    patterns = []
+    for base in (os.path.join("checkpoints", f"*seed{seed}*.ckpt"),
+                 f"*seed{seed}*.ckpt",
+                 os.path.join(OUTPUT_DIR, f"*seed{seed}*.ckpt"),
+                 os.path.join(OUTPUT_DIR, f"*{seed}*.ckpt")):
+        patterns += sorted(glob.glob(base))
+    if patterns:
+        return patterns[0]
     return None
 
 
@@ -105,6 +124,92 @@ def _build_eval_dataloader(tft, df, encoder_len):
         stop_randomization=True,
     )
     return eval_dataset.to_dataloader(batch_size=64, shuffle=False, num_workers=0)
+
+
+def plot_vsn_importance(vsn_agg):
+    """
+    Publication figure: encoder VSN selection weights (%) per feature with
+    cross-seed std error bars.
+
+    Purpose (Reviewer): visually demonstrates whether the network allocates
+    material Variable-Selection-Network weight to the GARCH_sigma econometric
+    prior and the US_VIX_Diff cross-border signal -- evidence that the model is
+    not merely overfitting to the raw autoregressive return channel.
+
+    Saved to both the workspace and config.OUTPUT_DIR.
+    """
+    df = vsn_agg.sort_values(by="mean", ascending=True).copy()
+    labels = [CATEGORY_MAP.get(f, f) for f in df["Feature"]]
+    fig, ax = plt.subplots(figsize=(8, 0.45 * len(df) + 1.2))
+    y = np.arange(len(df))
+    ax.barh(y, df["mean"].values, xerr=df["std"].values,
+            color="#1f77b4", edgecolor="black", alpha=0.9, error_kw={"lw": 1.2})
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=9)
+    ax.invert_yaxis()
+    ax.set_xlabel("VSN selection weight (% of encoder variables)", fontsize=10)
+    ax.set_title("Variable Selection Network: Feature Importance\n"
+                 "(mean +/- std across 3 seeds)", fontsize=11)
+    for xi, yi in zip(df["mean"].values, y):
+        ax.text(xi + 0.4, yi, f"{xi:.1f}%", va="center", fontsize=8)
+    ax.set_xlim(0, min(110, float(df["mean"].max()) * 1.25 + 5))
+    fig.tight_layout()
+
+    # Save locally + to Drive OUTPUT_DIR
+    out = []
+    path_local = "fig_vsn_feature_importance.png"
+    fig.savefig(path_local, dpi=200, bbox_inches="tight")
+    out.append(path_local)
+    try:
+        path_drive = os.path.join(OUTPUT_DIR, path_local)
+        fig.savefig(path_drive, dpi=200, bbox_inches="tight")
+        out.append(path_drive)
+    except Exception as e:
+        print(f"  [WARN] Could not save VSN plot to Drive: {e}")
+    plt.close(fig)
+    return out
+
+
+def plot_temporal_attention(attn_agg, encoder_len=21):
+    """
+    Publication figure: mean temporal attention weight per lookback lag with a
+    horizontal reference line at uniform attention (1/encoder_len).
+
+    Purpose (Reviewer #20): shows whether the network concentrates attention on
+    the most recent volatility shocks (t-1, t-2) versus a flat multi-week
+    baseline. The uniform reference (1/21 ~ 4.76%) lets a reviewer immediately
+    judge whether any observed concentration is meaningful.
+    """
+    df = attn_agg.sort_values(by="Lag").copy()
+    lags = df["Lag"].astype(int).values
+    means = (df["mean"].values * 100.0)
+    stds = (df["std"].values * 100.0)
+
+    fig, ax = plt.subplots(figsize=(9, 4.2))
+    ax.bar(lags, means, yerr=stds, color="#2ca02c", edgecolor="black",
+           alpha=0.85, error_kw={"lw": 1.0}, width=0.7)
+    unif = 100.0 / encoder_len
+    ax.axhline(unif, color="red", linestyle="--", lw=1.4,
+               label=f"Uniform attention baseline (1/{encoder_len} = {unif:.1f}%)")
+    ax.set_xlabel("Lookback lag (t-k), most recent first", fontsize=10)
+    ax.set_ylabel("Mean attention weight (%)", fontsize=10)
+    ax.set_title("Multi-head Temporal Attention: Memory Footprint Across the "
+                 "21-Day Encoder Window\n(mean +/- std across 3 seeds)", fontsize=11)
+    ax.legend(fontsize=8)
+    ax.set_xticks(lags[::1])
+    fig.tight_layout()
+
+    path_local = "fig_temporal_attention.png"
+    fig.savefig(path_local, dpi=200, bbox_inches="tight")
+    out = [path_local]
+    try:
+        path_drive = os.path.join(OUTPUT_DIR, path_local)
+        fig.savefig(path_drive, dpi=200, bbox_inches="tight")
+        out.append(path_drive)
+    except Exception as e:
+        print(f"  [WARN] Could not save attention plot to Drive: {e}")
+    plt.close(fig)
+    return out
 
 
 def run_multi_seed_explainability():
@@ -187,6 +292,12 @@ def run_multi_seed_explainability():
 
     attn_agg.to_csv(os.path.join(OUTPUT_DIR, "temporal_attention_distribution_seed_aggregated.csv"), index=False)
     attn_agg.to_csv("temporal_attention_distribution_seed_aggregated.csv", index=False)
+
+    # ---- Figures: VSN importance + temporal attention (publication-quality) --
+    fig_paths = plot_vsn_importance(vsn_agg)
+    print(f"[SUCCESS] VSN importance plot -> {fig_paths}")
+    fig_paths2 = plot_temporal_attention(attn_agg, encoder_len=config.ENCODER_LENGTH)
+    print(f"[SUCCESS] Temporal attention plot -> {fig_paths2}")
 
     # ---- Write multi-seed interpretability report --------------------------
     report_path = os.path.join(OUTPUT_DIR, "tft_explainability_report.txt")
