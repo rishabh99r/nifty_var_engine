@@ -474,24 +474,25 @@ def tail_breach_depth_diagnostic(actual, var_pred, sigma, mu=0.0):
     }
 
 
-def get_basel_traffic_light(failures, total_obs, alpha=0.01):
+def get_regulatory_inspired_zone(failures, total_obs, alpha=0.01):
     """
-    REGULATORY-INSPIRED binomial coverage zone (S7).
+    REGULATORY-INSPIRED binomial coverage zone (S7 / F3).
 
     This is a custom, sample-size-adapted binomial classification inspired by
     the Basel traffic-light idea -- it is NOT the formal Basel III / FRTB
     traffic-light table and confers NO regulatory compliance. Returns
-    (green_breach_limit, zone) where zone in {GREEN, YELLOW, RED}.
+    (green_breach_limit, coverage_zone) where coverage_zone in {GREEN, YELLOW,
+    RED}.
     """
     p_cum = stats.binom.cdf(failures, total_obs, alpha)
     green_limit = stats.binom.ppf(config.BASEL_GREEN_CUM, total_obs, alpha)
     if p_cum < config.BASEL_GREEN_CUM:
-        zone = "GREEN"
+        coverage_zone = "GREEN"
     elif p_cum < config.BASEL_YELLOW_CUM:
-        zone = "YELLOW"
+        coverage_zone = "YELLOW"
     else:
-        zone = "RED"
-    return int(green_limit), zone
+        coverage_zone = "RED"
+    return int(green_limit), coverage_zone
 
 
 def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, garch_sigma=None, alpha=0.01):
@@ -525,7 +526,7 @@ def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, garch_sigma=No
     lr_cc = kupiec["stat"] + christ["stat"]
     p_cc = 1.0 - stats.chi2.cdf(lr_cc, df=2)
 
-    limit, zone = get_basel_traffic_light(kupiec["N"], kupiec["T"], alpha=alpha)
+    limit, coverage_zone = get_regulatory_inspired_zone(kupiec["N"], kupiec["T"], alpha=alpha)
 
     # Tail breach-depth diagnostic (descriptive; NOT an ES backtest).
     if garch_sigma is not None:
@@ -537,8 +538,8 @@ def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, garch_sigma=No
         "breaches": kupiec["N"],
         "tft_failures": kupiec["N"],
         "total_obs": kupiec["T"],
-        "basel_limit": limit,
-        "basel_zone": zone,
+        "green_breach_limit": limit,
+        "coverage_zone": coverage_zone,
         "kupiec_stat": kupiec["stat"],
         "kupiec_p_value": kupiec["p_value"],
         "christ_stat": christ["stat"],
@@ -551,9 +552,11 @@ def calculate_metrics(actual_or_df, garch_var=None, tft_var=None, garch_sigma=No
         "dm_statistic": dm["dm_stat"],
         "dm_p_value": dm["dm_p_value"],
         "mean_loss_diff": dm["mean_diff"],
-        "es_n_exceed": es["n_exceed"],
-        "es_empirical": es.get("mean_exceedance_loss", np.nan),
-        "es_mean_resid": es.get("mean_standardized_resid", np.nan),
+        # F3: ES-era key names removed -- these are descriptive tail-exceedance
+        # depth statistics, NOT an Expected Shortfall backtest.
+        "tail_exceedance_count": es["n_exceed"],
+        "tail_mean_return": es.get("mean_exceedance_loss", np.nan),
+        "tail_mean_standardized_resid": es.get("mean_standardized_resid", np.nan),
     }
 
 

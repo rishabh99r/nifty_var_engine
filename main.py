@@ -6,11 +6,12 @@
 # Statistical disclosure requirements (for publishability):
 #   - All 3 seeds are trained and evaluated.
 #   - Per-seed artifacts are retained (test_tft_predictions_panel_seed_<s>.csv).
-#   - Aggregated Mean +/- Std metrics are computed across seeds and written to
-#     multi_seed_validation_report.txt.
-#   - The "canonical" panel for report plotting is the MEDIAN-performing seed
-#     (by NIFTY50 pinball loss), explicitly captioned, never a cherry-picked
-#     best seed.
+#   - Aggregated per-seed summary metrics are written to
+#     multi_seed_validation_report.txt (S8: p-values reported PER SEED, never
+#     averaged; robust MEDIAN +/- Std used for proper scores).
+#   - The canonical forecast is the pre-determined 3-seed ENSEMBLE mean of the
+#     q={0.01,0.50,0.99} quantiles (F4) -- computed BEFORE inspecting test
+#     outcomes. There is NO median-performing-seed selection path.
 # =============================================================================
 import datetime
 import json
@@ -134,13 +135,13 @@ def main():
         print(f"\n[AUDIT] Seed {seed} (NIFTY 50 Results):")
         print(f"  -> Out-of-Sample Days:  {nifty_metrics['total_obs']}")
         print(f"  -> 99% VaR Breaches:    {nifty_metrics['breaches']} "
-              f"(Regulatory-Inspired Binomial Zone: {nifty_metrics['basel_zone']})")
+              f"(Regulatory-Inspired Binomial Zone: {nifty_metrics['coverage_zone']})")
         print(f"  -> Kupiec POF p-value:  {nifty_metrics['kupiec_p_value']:.4f}")
         print(f"  -> Christoffersen Ind:  {nifty_metrics['christ_p_value']:.4f}")
         print(f"  -> Diebold-Mariano Stat: {nifty_metrics['dm_stat']:.4f} (p-value: {nifty_metrics['dm_p_value']:.4f}) "
               f"[d_t = L_TFT - L_GARCH; negative = TFT lower loss]")
-        print(f"  -> Tail breach depth: {nifty_metrics['es_n_exceed']} breaches; "
-              f"mean std resid z = {nifty_metrics['es_mean_resid']:.3f}")
+        print(f"  -> Tail breach depth: {nifty_metrics['tail_exceedance_count']} breaches; "
+              f"mean std resid z = {nifty_metrics['tail_mean_standardized_resid']:.3f}")
 
     # ------------------------------------------------------------------
     # Multi-seed aggregation (per-seed median +/- std) for disclosure.
@@ -226,7 +227,7 @@ def main():
     report_lines.append("ENSEMBLE (mean-of-seeds q0.01) per-asset breach counts:")
     for t, m in ensemble_metrics.items():
         report_lines.append(f"  {t}: {m['breaches']} breaches / {m['total_obs']} "
-                            f"(Reg-Inspired Binomial Zone {m['basel_zone']}), "
+                            f"(Reg-Inspired Binomial Zone {m['coverage_zone']}), "
                             f"Kupiec p={m['kupiec_p_value']:.4f}, "
                             f"DM={m['dm_stat']:.4f} (p={m['dm_p_value']:.4f})")
     report_lines.append("NOTE: canonical tables use the pre-determined 3-seed ensemble, "

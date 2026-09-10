@@ -150,9 +150,14 @@ def plot_vsn_importance(vsn_agg):
     ax.set_xlabel("VSN selection weight (% of encoder variables)", fontsize=10)
     ax.set_title("Variable Selection Network: Feature Importance\n"
                  "(mean +/- std across 3 seeds)", fontsize=11)
-    for xi, yi in zip(df["mean"].values, y):
-        ax.text(xi + 0.4, yi, f"{xi:.1f}%", va="center", fontsize=8)
-    ax.set_xlim(0, min(110, float(df["mean"].max()) * 1.25 + 5))
+    # VSN label placement fix: place the text PAST the error bar so a large
+    # cross-seed std never draws through the label.
+    for xi, si, yi in zip(df["mean"].values, df["std"].values, y):
+        text_x_pos = float(xi) + float(si) + 0.5
+        ax.text(text_x_pos, yi, f"{xi:.1f}%", va="center", fontsize=8)
+    # Extend the x-axis so the std-offset labels are not clipped.
+    max_text = float((df["mean"] + df["std"]).max()) + 2.0
+    ax.set_xlim(0, min(115, max(max_text, float(df["mean"].max()) * 1.25 + 5)))
     fig.tight_layout()
 
     # Save locally + to Drive OUTPUT_DIR

@@ -244,6 +244,7 @@ def rolling_gjr_garch_pit(returns_series):
 
     for t in range(lookback, T):
         # 1. Periodic parameter re-estimation
+        refit_just_happened = False  # state-continuity flag (F1)
         if (t - lookback) % refit_freq == 0 or current_res is None:
             refit_attempts += 1
             train_slice = returns_series.iloc[t - lookback : t]
@@ -258,6 +259,7 @@ def rolling_gjr_garch_pit(returns_series):
                     continue
                 current_res = candidate_res
                 refit_converged += 1
+                refit_just_happened = True
                 params = current_res.params
                 last_params = {
                     "mu": float(params.get("mu", 0.0)),
@@ -290,7 +292,16 @@ def rolling_gjr_garch_pit(returns_series):
 
         # 2. Daily variance recursion at t using shock from t-1
         prev_r = returns_series.iloc[t - 1]
-        prev_vol = vol_arr[t - 1] if not np.isnan(vol_arr[t - 1]) else current_res.conditional_volatility.iloc[-1]
+        # F1 (state-continuity fix): if a converged refit JUST happened, the
+        # newly estimated parameter set was fit on the window [t-lookback, t-1],
+        # so its FINAL fitted conditional volatility (the t-1 state under the NEW
+        # parameters) is the correct recursion seed. Using vol_arr[t-1] -- which
+        # was computed under the OLD parameters -- would inject a discontinuous
+        # variance state into the first new-parameter recursion.
+        if refit_just_happened:
+            prev_vol = float(current_res.conditional_volatility.iloc[-1])
+        else:
+            prev_vol = vol_arr[t - 1] if not np.isnan(vol_arr[t - 1]) else current_res.conditional_volatility.iloc[-1]
 
         eps_prev = prev_r - last_params["mu"]
         leverage_ind = 1.0 if eps_prev < 0.0 else 0.0

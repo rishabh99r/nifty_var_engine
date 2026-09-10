@@ -136,7 +136,22 @@ VAL_DAYS = 250                      # validation window (days)
 # ----------------------------------------------------------------------------
 # MULTI-SEED VALIDATION SUITE
 # ----------------------------------------------------------------------------
-VALIDATION_SEEDS = [42, 123, 777]
+# Default 3-seed validation. RD5: overridable via the VALIDATION_SEEDS env var
+# (comma-separated) so the final 5-seed run (e.g.
+#   VALIDATION_SEEDS=42,123,777,2027,31415 python main.py
+# ) propagates to every consumer (main.py / ablation_runner.py / deployment.py
+# / production_engine.py / explainability.py) without code edits.
+def _resolve_seeds(default_seeds):
+    raw = os.environ.get("VALIDATION_SEEDS", "").strip()
+    if not raw:
+        return list(default_seeds)
+    seeds = [int(x) for x in raw.split(",") if x.strip()]
+    if not seeds:
+        raise ValueError("VALIDATION_SEEDS env var must be a comma-separated list of ints")
+    return seeds
+
+
+VALIDATION_SEEDS = _resolve_seeds([42, 123, 777])
 
 # ----------------------------------------------------------------------------
 # DOWNSIDE QUANTILE & BASEL PARAMETERS

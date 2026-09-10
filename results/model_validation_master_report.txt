@@ -5,10 +5,18 @@
 
 NOTE: This table reports the pre-determined 3-seed ENSEMBLE forecast
 (mean-of-seed q=0.01 forecast across seeds), not a cherry-picked seed.
-Terminology: 'Binomial coverage zone' is a REGULATORY-INSPIRED custom
-binomial classification (sample-size adapted), NOT the formal Basel
+Terminology (S7): 'Regulatory-Inspired Binomial Zone' is a custom,
+sample-size-adapted binomial classification -- NOT the formal Basel
 traffic-light table, and NOT a Basel III/FRTB compliance certification.
 Frozen research cut-off: 2026-09-07. No time_idx feature.
+STATISTICAL-POWER CAVEAT (S9): at 500 OOS days and alpha=1% only ~5
+exceptions are expected, so Kupiec / Christoffersen / DQ tests have LOW
+POWER. Non-rejection means 'no evidence of failure' -- it is NOT proof
+of calibration accuracy.
+CORE FINDING (S10): the Full ECTFT underperformed the GARCH-conditioned
+TFT in out-of-sample 1% VaR accuracy on this sample: the GJR-GARCH prior
+is highly effective for neural tail-risk forecasting, while the
+cross-border macro features introduce noise that degrades 1% VaR.
 
     Asset  Observations  Breaches (3-seed ensemble)  Expected Breaches Breach Rate (%) Binomial Coverage Zone  Kupiec POF Stat  Kupiec p-value  Christoffersen Stat  Christoffersen p-val  Engle-Manganelli DQ Stat  DQ p-value  DM Stat (neg=TFT lower / pos=GARCH lower)  DM p-value  Mean Loss Diff  Tail n (breaches)  Tail mean exceedance loss  Tail mean std resid (z)
   NIFTY50           500                           2                5.0           0.40%                  GREEN            2.353           0.125                0.016                0.8990                     1.874      0.9309                                     1.7326      0.0832        0.002434                  2                    -2.7186                  -3.3155
@@ -16,9 +24,9 @@ BANKNIFTY           500                           2                5.0          
   NIFTYIT           500                           5                5.0           1.00%                  GREEN           -0.000           1.000                0.101                0.7504                     0.676      0.9950                                     0.1955      0.8450        0.000799                  5                    -4.9166                  -3.4783
 
 TAIL NOTE: 'Tail mean std resid (z)' is a descriptive breach-depth
-diagnostic (mean standardized exceedance). A strongly negative value
-signals the model understates crash severity on breach days. This is
-NOT an Expected Shortfall backtest.
+diagnostic ('Tail Exceedance Depth', S7) -- mean standardized
+exceedance. A strongly negative value signals the model understates
+crash severity on breach days. NOT an Expected Shortfall backtest.
 
 
 --------------------------------------------------------------------------------
@@ -27,7 +35,8 @@ GJR-GARCH(1,1) SKEW-T ESTIMATED PARAMETERS (robust shape extraction):
   [BANKNIFTY] Omega=0.03216, Alpha=0.04755, Gamma=0.10988, Beta=0.88373, df(nu)=5.26, lambda=-0.083
   [NIFTYIT] Omega=0.06469, Alpha=0.01705, Gamma=0.05598, Beta=0.92424, df(nu)=4.53, lambda=0.008
 
-CROSS-BORDER CAUSALITY (NATIVE CALENDAR -- no ML timezone shift):
+CROSS-BORDER PREDICTIVE PRECEDENCE (S7; shared trading dates,
+native calendar, no ML timezone shift, no forward-fill):
   [NIFTY50] US VIX -> Real India VIX (native calendar):
      1D Lag p=0.0000 | 2D Lag p=0.0000 | 5D Lag p=0.0000
   [BANKNIFTY] US VIX -> Real India VIX (native calendar):
@@ -36,43 +45,44 @@ CROSS-BORDER CAUSALITY (NATIVE CALENDAR -- no ML timezone shift):
      1D Lag p=0.0000 | 2D Lag p=0.0000 | 5D Lag p=0.0000
 
 GRANGER INPUT DIAGNOSTICS (ADF stationarity + calendar-artifact check):
-  [NIFTY50] US VIX NativeDiff: ADF p=0.0000, zero%=0.53%, dup%=2.99% | Domestic Native: ADF p=0.0000, zero%=0.75%, dup%=0.85%
-  [BANKNIFTY] US VIX NativeDiff: ADF p=0.0000, zero%=0.53%, dup%=2.99% | Domestic Native: ADF p=0.0000, zero%=0.75%, dup%=0.85%
-  [NIFTYIT] US VIX NativeDiff: ADF p=0.0000, zero%=0.53%, dup%=2.99% | Domestic Native: ADF p=0.0000, zero%=0.75%, dup%=0.85%
+  [NIFTY50] US VIX NativeDiff: ADF p=0.0000, zero%=0.44%, dup%=0.00% | Domestic Native: ADF p=0.0000, zero%=0.77%, dup%=0.00%
+  [BANKNIFTY] US VIX NativeDiff: ADF p=0.0000, zero%=0.44%, dup%=0.00% | Domestic Native: ADF p=0.0000, zero%=0.77%, dup%=0.00%
+  [NIFTYIT] US VIX NativeDiff: ADF p=0.0000, zero%=0.44%, dup%=0.00% | Domestic Native: ADF p=0.0000, zero%=0.77%, dup%=0.00%
   [READ] Near-zero Granger p is only credible if ADF p<0.05 (stationary)
   and zero%/dup% are small (no calendar-misalignment artifact).
 --------------------------------------------------------------------------------
 
 ================================================================================
-      MULTI-SEED VALIDATION REPORT (MEAN +/- STD ACROSS SEEDS)
+      MULTI-SEED VALIDATION REPORT (MEDIAN +/- STD ACROSS SEEDS)
 ================================================================================
 Seeds: [42, 123, 777] (n = 3)
+S8: p-values are NOT averaged across seeds -- reported per seed.
 
-Metric                              Mean             Std
+Metric                            Median             Std
 ------------------------------------------------------------
 basel_limit                       9.0000          0.0000   values=[9.0, 9.0, 9.0]
-breaches                          2.3333          1.1547   values=[3.0, 3.0, 1.0]
-cc_p_value                        0.4386          0.3018   values=[0.612808, 0.612808, 0.090114]
-cc_stat                           2.2574          2.2135   values=[0.979407, 0.979407, 4.813361]
-christ_p_value                    0.8993          0.0872   values=[0.848917, 0.848917, 1.0]
-christ_stat                       0.0242          0.0210   values=[0.036291, 0.036291, 0.0]
-dm_p_value                        0.2677          0.4369   values=[0.004422, 0.771971, 0.026681]
-dm_stat                           1.7841          1.3319   values=[2.846359, 0.289797, 2.216155]
-dm_statistic                      1.7841          1.3319   values=[2.846359, 0.289797, 2.216155]
-dq_p_value                        0.9110          0.1112   values=[0.959769, 0.989486, 0.783726]
-dq_stat                           1.8605          1.1967   values=[1.495866, 0.888563, 3.197158]
-es_empirical                     -2.7834          0.4448   values=[-2.526568, -2.526568, -3.297014]
-es_mean_resid                    -3.0856          0.1110   values=[-3.021552, -3.021552, -3.213792]
-es_n_exceed                       2.3333          1.1547   values=[3.0, 3.0, 1.0]
-kupiec_p_value                    0.2304          0.1751   values=[0.331478, 0.331478, 0.02824]
-kupiec_stat                       2.2332          2.2345   values=[0.943116, 0.943116, 4.813361]
-mean_loss_diff                    0.0027          0.0020   values=[0.004233, 0.000396, 0.00334]
-tft_failures                      2.3333          1.1547   values=[3.0, 3.0, 1.0]
+breaches                          3.0000          1.1547   values=[3.0, 3.0, 1.0]
+cc_p_value                        0.6128          0.3018   values=[0.612808, 0.612808, 0.090114]
+cc_stat                           0.9794          2.2135   values=[0.979407, 0.979407, 4.813361]
+christ_p_value                    0.8489          0.0872   values=[0.848917, 0.848917, 1.0]
+christ_stat                       0.0363          0.0210   values=[0.036291, 0.036291, 0.0]
+dm_p_value                        0.0267          0.4369   values=[0.004422, 0.771971, 0.026681]
+dm_stat                           2.2162          1.3319   values=[2.846359, 0.289797, 2.216155]
+dm_statistic                      2.2162          1.3319   values=[2.846359, 0.289797, 2.216155]
+dq_p_value                        0.9598          0.1112   values=[0.959769, 0.989486, 0.783726]
+dq_stat                           1.4959          1.1967   values=[1.495866, 0.888563, 3.197158]
+es_empirical                     -2.5266          0.4448   values=[-2.526568, -2.526568, -3.297014]
+es_mean_resid                    -3.0216          0.1110   values=[-3.021552, -3.021552, -3.213792]
+es_n_exceed                       3.0000          1.1547   values=[3.0, 3.0, 1.0]
+kupiec_p_value                    0.3315          0.1751   values=[0.331478, 0.331478, 0.02824]
+kupiec_stat                       0.9431          2.2345   values=[0.943116, 0.943116, 4.813361]
+mean_loss_diff                    0.0033          0.0020   values=[0.004233, 0.000396, 0.00334]
+tft_failures                      3.0000          1.1547   values=[3.0, 3.0, 1.0]
 total_obs                       500.0000          0.0000   values=[500.0, 500.0, 500.0]
 
 ENSEMBLE (mean-of-seeds q0.01) per-asset breach counts:
-  BANKNIFTY: 2 breaches / 500 (Basel GREEN), Kupiec p=0.1250, DM=0.7945 (p=0.4269)
-  NIFTY50: 2 breaches / 500 (Basel GREEN), Kupiec p=0.1250, DM=1.7326 (p=0.0832)
-  NIFTYIT: 5 breaches / 500 (Basel GREEN), Kupiec p=1.0000, DM=0.1955 (p=0.8450)
+  BANKNIFTY: 2 breaches / 500 (Reg-Inspired Binomial Zone GREEN), Kupiec p=0.1250, DM=0.7945 (p=0.4269)
+  NIFTY50: 2 breaches / 500 (Reg-Inspired Binomial Zone GREEN), Kupiec p=0.1250, DM=1.7326 (p=0.0832)
+  NIFTYIT: 5 breaches / 500 (Reg-Inspired Binomial Zone GREEN), Kupiec p=1.0000, DM=0.1955 (p=0.8450)
 NOTE: canonical tables use the pre-determined 3-seed ensemble, never a test-selected seed.
 ================================================================================

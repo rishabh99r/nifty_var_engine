@@ -349,7 +349,7 @@ def export_complete_test_suite(panel_df, garch_params, granger_params):
             "Breaches (3-seed ensemble)": m["breaches"],
             "Expected Breaches": exp_breaches,
             "Breach Rate (%)": f"{breach_pct:.2f}%",
-            "Binomial Coverage Zone": m["basel_zone"],
+            "Binomial Coverage Zone": m["coverage_zone"],
             "Kupiec POF Stat": round(m["kupiec_stat"], 3),
             "Kupiec p-value": round(m["kupiec_p_value"], 4),
             "Christoffersen Stat": round(m["christ_stat"], 3),
@@ -360,9 +360,9 @@ def export_complete_test_suite(panel_df, garch_params, granger_params):
             "DM Stat (neg=TFT lower / pos=GARCH lower)": round(m["dm_stat"], 4),
             "DM p-value": round(m["dm_p_value"], 4),
             "Mean Loss Diff": round(m["mean_loss_diff"], 6),
-            "Tail n (breaches)": m["es_n_exceed"],
-            "Tail mean exceedance loss": round(m["es_empirical"], 4) if not np.isnan(m["es_empirical"]) else "N/A",
-            "Tail mean std resid (z)": round(m["es_mean_resid"], 4) if not np.isnan(m["es_mean_resid"]) else "N/A",
+            "Tail n (breaches)": m["tail_exceedance_count"],
+            "Tail mean exceedance loss": round(m["tail_mean_return"], 4) if not np.isnan(m["tail_mean_return"]) else "N/A",
+            "Tail mean std resid (z)": round(m["tail_mean_standardized_resid"], 4) if not np.isnan(m["tail_mean_standardized_resid"]) else "N/A",
         })
 
     audit_table = pd.DataFrame(rows)
@@ -447,5 +447,12 @@ if __name__ == "__main__":
     plot_all_risk_rivers(panel_data)
     plot_all_backtest_tracking(panel_data)
     plot_all_loss_comparisons(panel_data)
+    # RD6: learning-curve + LR-trajectory figures from the CSVLogger outputs.
+    try:
+        from learning_curves import plot_learning_curves, plot_lr_trajectory
+        plot_learning_curves()
+        plot_lr_trajectory()
+    except Exception as e:
+        print(f"[WARN] Learning-curve figures skipped: {e}")
     export_complete_test_suite(panel_data, garch_dict, granger_dict)
     print(f"\n[COMPLETE] All 3-series publication figures and audit tables saved to: {OUTPUT_DIR}")

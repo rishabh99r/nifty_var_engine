@@ -28,6 +28,7 @@ import pandas as pd
 import torch
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.loggers import CSVLogger
 from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer, QuantileLoss
 
 import config
@@ -171,13 +172,16 @@ def build_datasets(df, encoder_length=None, backtest_days=None, val_days=None,
 def train_tft(df, hidden_size=None, dropout=None, learning_rate=None, seed=42,
               max_epochs=None, enable_progress_bar=True, pruning_callback=None,
               encoder_length=None, backtest_days=None,
-              known_features=None, unknown_features=None):
+              known_features=None, unknown_features=None,
+              attention_heads=None, target_quantiles=None, logger=None):
     """Trains the Econometrically-Conditioned TFT with the committed champion spec.
 
     known_features / unknown_features override the canonical feature lists
     (used by the ablation tournament). None -> canonical ECTFT spec (no
-    time_idx). A per-seed experiment_manifest.json entry is written so the
-    deployed model is discovered deterministically, never by lexical globbing.
+    time_idx). attention_heads / target_quantiles allow HPO and the q0.01-
+    specialist experiment to override the architecture/output (RD pass).
+    A per-seed experiment_manifest.json entry is written so the deployed model
+    is discovered deterministically, never by lexical globbing.
     """
     if hidden_size is None:
         hidden_size = config.HIDDEN_SIZE
@@ -195,6 +199,21 @@ def train_tft(df, hidden_size=None, dropout=None, learning_rate=None, seed=42,
         known_features = list(DEFAULT_KNOWN_FEATURES)
     if unknown_features is None:
         unknown_features = list(DEFAULT_UNKNOWN_FEATURES)
+    if attention_heads is None:
+        attention_heads = config.ATTENTION_HEADS
+    if target_quantiles is None:
+        target_quantiles = list(config.QUANTILES)
+    # Default logger = CSVLogger (learning diagnostics for Fig 6/7). Callers can
+    # pass logger=False to disable (e.g. inside HPO where per-trial logging is
+    # wasteful) or a custom logger.
+    if logger is None:
+        logger = CSVLogger(save_dir="lightning_logs", name=f"tft_run_seed_{seed}")
+        try:
+            logger.log_hyperparams({"seed": int(seed), "hidden_size": hidden_size,
+                                    "attention_heads": attention_heads,
+                                    "target_quantiles": target_quantiles})
+        except Exception:
+            pass
 
     pl.seed_everything(seed, workers=True)
 
@@ -208,6 +227,8 @@ def train_tft(df, hidden_size=None, dropout=None, learning_rate=None, seed=42,
         "encoder_length": int(encoder_length),
         "backtest_days": int(backtest_days),
         "dataset_cutoff": getattr(config, "END_DATE", None),
+        "attention_heads": int(attention_heads),
+        "quantiles": [float(q) for q in target_quantiles],
     }
 
     train_dataloader = training_dataset.to_dataloader(train=True, batch_size=config.BATCH_SIZE, num_workers=0, pin_memory=False)
@@ -218,11 +239,11 @@ def train_tft(df, hidden_size=None, dropout=None, learning_rate=None, seed=42,
         training_dataset,
         learning_rate=learning_rate,
         hidden_size=hidden_size,
-        attention_head_size=config.ATTENTION_HEADS,
+        attention_head_size=attention_heads,
         dropout=dropout,
-        hidden_continuous_size=config.HIDDEN_CONTINUOUS_SIZE,
-        output_size=config.OUTPUT_SIZE,
-        loss=QuantileLoss(quantiles=config.QUANTILES),
+        hidden_continuous_size=max(4, hidden_size // 2),
+        output_size=len(target_quantiles),
+        loss=QuantileLoss(quantiles=target_quantiles),
         optimizer="adam",
         reduce_on_plateau_patience=config.REDUCE_ON_PLATEAU_PATIENCE,
     )
@@ -254,7 +275,7 @@ def train_tft(df, hidden_size=None, dropout=None, learning_rate=None, seed=42,
         gradient_clip_val=config.GRADIENT_CLIP_VAL,
         callbacks=callbacks,
         enable_progress_bar=enable_progress_bar,
-        logger=False,
+        logger=logger,
     )
 
     trainer.fit(tft, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
@@ -264,8 +285,13 @@ def train_tft(df, hidden_size=None, dropout=None, learning_rate=None, seed=42,
         print(f"\n[CHECKPOINT] Loading optimal model weights from: {best_model_path}")
         tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
 
-    val_loss = trainer.callback_metrics.get("val_loss")
-    best_score = val_loss.item() if val_loss is not None else 0.0
+    # RD1 (best_score fix): the checkpoint callback tracks the TRUE monitored
+    # best val_loss (it is always set after fit when best_model_path exists).
+    best_score = (
+        checkpoint_callback.best_model_score.item()
+        if checkpoint_callback.best_model_score is not None
+        else float("nan")
+    )
 
     # Stash the resolved feature spec on the model for reproducibility/audit.
     try:
@@ -428,18 +454,30 @@ def generate_and_save_predictions(tft, test_dataloader, df, seed,
 
     pred_df = pred_index.copy()
     pred_df["TFT_VaR_99_Raw"] = pred_values[:, 0, 0]  # q = 0.01
-    pred_df["TFT_Median"] = pred_values[:, 0, 1]      # q = 0.50
-    pred_df["TFT_VaR_Upside"] = pred_values[:, 0, 2]  # q = 0.99
+
+    # RD2: dynamic quantile width -- the q0.01-SPECIALIST model outputs only
+    # one quantile; the aggregate model outputs three.
+    n_q = pred_values.shape[2]
+    if n_q >= 3:
+        pred_df["TFT_Median"] = pred_values[:, 0, 1]      # q = 0.50
+        pred_df["TFT_VaR_Upside"] = pred_values[:, 0, 2]  # q = 0.99
+    else:
+        pred_df["TFT_Median"] = np.nan
+        pred_df["TFT_VaR_Upside"] = np.nan
 
     # FIX (Round 23): quantile-crossing audit. Quantile loss does NOT enforce
     # q0.01 <= q0.50 <= q0.99; verify the hierarchy holds for every forecast.
-    cross_lo = int(np.sum(pred_values[:, 0, 0] > pred_values[:, 0, 1]))
-    cross_hi = int(np.sum(pred_values[:, 0, 1] > pred_values[:, 0, 2]))
-    total_cross = cross_lo + cross_hi
-    print(f"[AUDIT] Quantile crossing violations: {total_cross} / {len(pred_values)} "
-          f"(q01>q50: {cross_lo}, q50>q99: {cross_hi})")
-    if total_cross > 0:
-        print("[WARNING] Neural network predicted inverted quantiles on some rows.")
+    # (Skipped for the single-quantile specialist -- there is no hierarchy.)
+    if n_q >= 3:
+        cross_lo = int(np.sum(pred_values[:, 0, 0] > pred_values[:, 0, 1]))
+        cross_hi = int(np.sum(pred_values[:, 0, 1] > pred_values[:, 0, 2]))
+        total_cross = cross_lo + cross_hi
+        print(f"[AUDIT] Quantile crossing violations: {total_cross} / {len(pred_values)} "
+              f"(q01>q50: {cross_lo}, q50>q99: {cross_hi})")
+        if total_cross > 0:
+            print("[WARNING] Neural network predicted inverted quantiles on some rows.")
+    else:
+        print("[AUDIT] Single-quantile (q0.01-specialist) model: crossing audit skipped.")
 
     panel_meta = df[["time_idx", "ticker", "Date", "Log_Ret", "GARCH_VaR_99", "GARCH_sigma"]].copy()
     merged_panel = pred_df.merge(panel_meta, on=["time_idx", "ticker"], how="inner")
