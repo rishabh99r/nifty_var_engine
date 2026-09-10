@@ -362,6 +362,12 @@ def write_experiment_manifest(seed, checkpoint_path, val_loss,
         "dataset_cutoff": getattr(config, "END_DATE", None),
         "feature_spec": feature_spec or {},
         "max_epochs": int(max_epochs) if max_epochs is not None else int(config.MAX_EPOCHS),
+        "hidden_size": getattr(config, "HIDDEN_SIZE", None),
+        "dropout": getattr(config, "DROPOUT", None),
+        "learning_rate": getattr(config, "LEARNING_RATE", None),
+        "batch_size": getattr(config, "BATCH_SIZE", None),
+        "optimizer": "adam",
+        "gradient_clip": getattr(config, "GRADIENT_CLIP_VAL", None),
         "timestamp": datetime.datetime.now().isoformat(),
     }
     manifest[f"seed_{seed}"] = entry

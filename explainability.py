@@ -149,7 +149,7 @@ def plot_vsn_importance(vsn_agg):
     ax.invert_yaxis()
     ax.set_xlabel("VSN selection weight (% of encoder variables)", fontsize=10)
     ax.set_title("Variable Selection Network: Feature Importance\n"
-                 "(mean +/- std across 3 seeds)", fontsize=11)
+                 "(mean +/- std across 5 seeds)", fontsize=11)
     # VSN label placement fix: place the text PAST the error bar so a large
     # cross-seed std never draws through the label.
     for xi, si, yi in zip(df["mean"].values, df["std"].values, y):
@@ -182,7 +182,7 @@ def plot_temporal_attention(attn_agg, encoder_len=21):
 
     Purpose (Reviewer #20): shows whether the network concentrates attention on
     the most recent volatility shocks (t-1, t-2) versus a flat multi-week
-    baseline. The uniform reference (1/21 ~ 4.76%) lets a reviewer immediately
+    baseline. The uniform reference (1/10 = 10.0%) lets a reviewer immediately
     judge whether any observed concentration is meaningful.
     """
     df = attn_agg.sort_values(by="Lag").copy()
@@ -199,7 +199,7 @@ def plot_temporal_attention(attn_agg, encoder_len=21):
     ax.set_xlabel("Lookback lag (t-k), most recent first", fontsize=10)
     ax.set_ylabel("Mean attention weight (%)", fontsize=10)
     ax.set_title("Multi-head Temporal Attention: Memory Footprint Across the "
-                 "21-Day Encoder Window\n(mean +/- std across 3 seeds)", fontsize=11)
+                 "10-Day Encoder Window\n(mean +/- std across 5 seeds)", fontsize=11)
     ax.legend(fontsize=8)
     ax.set_xticks(lags[::1])
     fig.tight_layout()

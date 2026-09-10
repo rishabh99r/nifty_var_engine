@@ -19,9 +19,9 @@ is highly effective for neural tail-risk forecasting, while the
 cross-border macro features introduce noise that degrades 1% VaR.
 
     Asset  Observations  Breaches (3-seed ensemble)  Expected Breaches Breach Rate (%) Binomial Coverage Zone  Kupiec POF Stat  Kupiec p-value  Christoffersen Stat  Christoffersen p-val  Engle-Manganelli DQ Stat  DQ p-value  DM Stat (neg=TFT lower / pos=GARCH lower)  DM p-value  Mean Loss Diff  Tail n (breaches)  Tail mean exceedance loss  Tail mean std resid (z)
-  NIFTY50           500                           2                5.0           0.40%                  GREEN            2.353           0.125                0.016                0.8990                     1.874      0.9309                                     1.7326      0.0832        0.002434                  2                    -2.7186                  -3.3155
-BANKNIFTY           500                           2                5.0           0.40%                  GREEN            2.353           0.125                0.016                0.8990                     2.102      0.9100                                     0.7945      0.4269        0.001092                  2                    -2.4989                  -2.8468
-  NIFTYIT           500                           5                5.0           1.00%                  GREEN           -0.000           1.000                0.101                0.7504                     0.676      0.9950                                     0.1955      0.8450        0.000799                  5                    -4.9166                  -3.4783
+  NIFTY50           500                           1                5.0           0.20%                  GREEN            4.813          0.0282                0.000                1.0000                     3.610      0.7293                                     0.3558      0.7220        0.000532                  1                    -3.3165                  -2.9985
+BANKNIFTY           500                           1                5.0           0.20%                  GREEN            4.813          0.0282                0.000                1.0000                     3.293      0.7713                                    -0.4006      0.6887       -0.000693                  1                    -2.5372                  -3.4331
+  NIFTYIT           500                          12                5.0           2.40%                 YELLOW            7.111          0.0077                0.591                0.4419                    16.685      0.0105                                     1.3836      0.1665        0.002541                 12                    -4.4727                  -3.0202
 
 TAIL NOTE: 'Tail mean std resid (z)' is a descriptive breach-depth
 diagnostic ('Tail Exceedance Depth', S7) -- mean standardized
@@ -55,34 +55,34 @@ GRANGER INPUT DIAGNOSTICS (ADF stationarity + calendar-artifact check):
 ================================================================================
       MULTI-SEED VALIDATION REPORT (MEDIAN +/- STD ACROSS SEEDS)
 ================================================================================
-Seeds: [42, 123, 777] (n = 3)
+Seeds: [42, 123, 777, 2027, 31415] (n = 5)
 S8: p-values are NOT averaged across seeds -- reported per seed.
 
 Metric                            Median             Std
 ------------------------------------------------------------
-basel_limit                       9.0000          0.0000   values=[9.0, 9.0, 9.0]
-breaches                          3.0000          1.1547   values=[3.0, 3.0, 1.0]
-cc_p_value                        0.6128          0.3018   values=[0.612808, 0.612808, 0.090114]
-cc_stat                           0.9794          2.2135   values=[0.979407, 0.979407, 4.813361]
-christ_p_value                    0.8489          0.0872   values=[0.848917, 0.848917, 1.0]
-christ_stat                       0.0363          0.0210   values=[0.036291, 0.036291, 0.0]
-dm_p_value                        0.0267          0.4369   values=[0.004422, 0.771971, 0.026681]
-dm_stat                           2.2162          1.3319   values=[2.846359, 0.289797, 2.216155]
-dm_statistic                      2.2162          1.3319   values=[2.846359, 0.289797, 2.216155]
-dq_p_value                        0.9598          0.1112   values=[0.959769, 0.989486, 0.783726]
-dq_stat                           1.4959          1.1967   values=[1.495866, 0.888563, 3.197158]
-es_empirical                     -2.5266          0.4448   values=[-2.526568, -2.526568, -3.297014]
-es_mean_resid                    -3.0216          0.1110   values=[-3.021552, -3.021552, -3.213792]
-es_n_exceed                       3.0000          1.1547   values=[3.0, 3.0, 1.0]
-kupiec_p_value                    0.3315          0.1751   values=[0.331478, 0.331478, 0.02824]
-kupiec_stat                       0.9431          2.2345   values=[0.943116, 0.943116, 4.813361]
-mean_loss_diff                    0.0033          0.0020   values=[0.004233, 0.000396, 0.00334]
-tft_failures                      3.0000          1.1547   values=[3.0, 3.0, 1.0]
-total_obs                       500.0000          0.0000   values=[500.0, 500.0, 500.0]
+breaches                          2.0000          1.1402   values=[2.0, 1.0, 3.0, 2.0, 0.0]
+cc_p_value                        0.3059          0.2354   values=[0.305887, 0.090114, 0.612808, 0.305887, 0.00657]
+cc_stat                           2.3691          3.5932   values=[2.369079, 4.813361, 0.979407, 2.369079, 10.050336]
+christ_p_value                    0.8990          0.0676   values=[0.899041, 1.0, 0.848917, 0.899041, 1.0]
+christ_stat                       0.0161          0.0150   values=[0.016097, 0.0, 0.036291, 0.016097, 0.0]
+dm_p_value                        0.1301          0.3765   values=[0.817227, 0.015782, 0.620297, 0.130084, 0.002381]
+dm_stat                           0.2311          1.9331   values=[0.231113, 2.413925, -0.495429, -1.513772, 3.038031]
+dm_statistic                      0.2311          1.9331   values=[0.231113, 2.413925, -0.495429, -1.513772, 3.038031]
+dq_p_value                        0.9234          0.0788   values=[0.936918, 0.771464, 0.914997, 0.931743, nan]
+dq_stat                           1.9574          0.7008   values=[1.802737, 3.29155, 2.050493, 1.864342, nan]
+green_breach_limit                9.0000          0.0000   values=[9.0, 9.0, 9.0, 9.0, 9.0]
+kupiec_p_value                    0.1250          0.1296   values=[0.125044, 0.02824, 0.331478, 0.125044, 0.001523]
+kupiec_stat                       2.3530          3.6050   values=[2.352982, 4.813361, 0.943116, 2.352982, 10.050336]
+mean_loss_diff                    0.0002          0.0029   values=[0.000212, 0.003722, -0.000377, -0.001743, 0.005048]
+tail_exceedance_count             2.0000          1.1402   values=[2.0, 1.0, 3.0, 2.0, 0.0]
+tail_mean_return                 -2.8231          0.2796   values=[-2.71864, -3.31647, -2.917916, -2.728368, nan]
+tail_mean_standardized_resid         -3.2112          0.1340   values=[-3.318078, -2.998542, -3.211566, -3.210837, nan]
+tft_failures                      2.0000          1.1402   values=[2.0, 1.0, 3.0, 2.0, 0.0]
+total_obs                       500.0000          0.0000   values=[500.0, 500.0, 500.0, 500.0, 500.0]
 
 ENSEMBLE (mean-of-seeds q0.01) per-asset breach counts:
-  BANKNIFTY: 2 breaches / 500 (Reg-Inspired Binomial Zone GREEN), Kupiec p=0.1250, DM=0.7945 (p=0.4269)
-  NIFTY50: 2 breaches / 500 (Reg-Inspired Binomial Zone GREEN), Kupiec p=0.1250, DM=1.7326 (p=0.0832)
-  NIFTYIT: 5 breaches / 500 (Reg-Inspired Binomial Zone GREEN), Kupiec p=1.0000, DM=0.1955 (p=0.8450)
+  BANKNIFTY: 1 breaches / 500 (Reg-Inspired Binomial Zone GREEN), Kupiec p=0.0282, DM=-0.4006 (p=0.6887)
+  NIFTY50: 1 breaches / 500 (Reg-Inspired Binomial Zone GREEN), Kupiec p=0.0282, DM=0.3558 (p=0.7220)
+  NIFTYIT: 12 breaches / 500 (Reg-Inspired Binomial Zone YELLOW), Kupiec p=0.0077, DM=1.3836 (p=0.1665)
 NOTE: canonical tables use the pre-determined 3-seed ensemble, never a test-selected seed.
 ================================================================================

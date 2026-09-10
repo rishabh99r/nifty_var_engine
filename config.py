@@ -110,12 +110,12 @@ TFT_RETRAIN_DAYS = 126    # trading days between TFT retrains (~6 months)
 DEPLOYMENT_STATE_FILE = "deployment_state.json"
 
 # ----------------------------------------------------------------------------
-# TFT ARCHITECTURE (Champion config -- kept as the auditable, committed spec)
+# TFT ARCHITECTURE (Locked Champion Config from Optuna)
 # ----------------------------------------------------------------------------
 HIDDEN_SIZE = 64
 ATTENTION_HEADS = 4
-DROPOUT = 0.30
-LEARNING_RATE = 0.001552
+DROPOUT = 0.3354115
+LEARNING_RATE = 0.00158829
 HIDDEN_CONTINUOUS_SIZE = max(4, HIDDEN_SIZE // 2)
 OUTPUT_SIZE = 3                     # quantiles
 QUANTILES = [0.01, 0.5, 0.99]
@@ -128,7 +128,7 @@ BATCH_SIZE = 64
 # ----------------------------------------------------------------------------
 # TEMPORAL SPLIT & WINDOW
 # ----------------------------------------------------------------------------
-ENCODER_LENGTH = 21                 # lookback window for the TFT encoder
+ENCODER_LENGTH = 10                 # Optuna-optimized lookback window
 PREDICTION_LENGTH = 1               # 1-step-ahead forecasts
 BACKTEST_DAYS = 500                 # out-of-sample test horizon (days)
 VAL_DAYS = 250                      # validation window (days)
@@ -136,7 +136,7 @@ VAL_DAYS = 250                      # validation window (days)
 # ----------------------------------------------------------------------------
 # MULTI-SEED VALIDATION SUITE
 # ----------------------------------------------------------------------------
-# Default 3-seed validation. RD5: overridable via the VALIDATION_SEEDS env var
+# Locked 5-seed validation. RD5: overridable via the VALIDATION_SEEDS env var
 # (comma-separated) so the final 5-seed run (e.g.
 #   VALIDATION_SEEDS=42,123,777,2027,31415 python main.py
 # ) propagates to every consumer (main.py / ablation_runner.py / deployment.py
@@ -146,12 +146,10 @@ def _resolve_seeds(default_seeds):
     if not raw:
         return list(default_seeds)
     seeds = [int(x) for x in raw.split(",") if x.strip()]
-    if not seeds:
-        raise ValueError("VALIDATION_SEEDS env var must be a comma-separated list of ints")
     return seeds
 
 
-VALIDATION_SEEDS = _resolve_seeds([42, 123, 777])
+VALIDATION_SEEDS = _resolve_seeds([42, 123, 777, 2027, 31415])
 
 # ----------------------------------------------------------------------------
 # DOWNSIDE QUANTILE & BASEL PARAMETERS

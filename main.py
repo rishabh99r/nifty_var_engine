@@ -4,12 +4,12 @@
 # Econometrically-Conditioned TFT VaR pipeline.
 #
 # Statistical disclosure requirements (for publishability):
-#   - All 3 seeds are trained and evaluated.
+#   - All 5 seeds are trained and evaluated.
 #   - Per-seed artifacts are retained (test_tft_predictions_panel_seed_<s>.csv).
 #   - Aggregated per-seed summary metrics are written to
 #     multi_seed_validation_report.txt (S8: p-values reported PER SEED, never
 #     averaged; robust MEDIAN +/- Std used for proper scores).
-#   - The canonical forecast is the pre-determined 3-seed ENSEMBLE mean of the
+#   - The canonical forecast is the pre-determined 5-seed ENSEMBLE mean of the
 #     q={0.01,0.50,0.99} quantiles (F4) -- computed BEFORE inspecting test
 #     outcomes. There is NO median-performing-seed selection path.
 # =============================================================================
@@ -57,7 +57,7 @@ def _record_deployment_retrain(seed):
     Stores the current trading-day index (from the freshly built master_df) as
     the retrain anchor and the date. deployment.py compares the current
     time_idx against this anchor to decide when to retrain next. The canonical
-    forecast is the 3-seed ENSEMBLE (not a single seed); 'seed' is recorded
+    forecast is the 5-seed ENSEMBLE (not a single seed); 'seed' is recorded
     for provenance only.
     """
     state = _load_deployment_state()
@@ -173,7 +173,7 @@ def main():
     # (ticker, time_idx). This is fixed BEFORE looking at test outcomes and is
     # NOT a test-selected seed.
     # ------------------------------------------------------------------
-    print("\n=== BUILDING 3-SEED QUANTILE ENSEMBLE (pre-determined rule) ===")
+    print("\n=== BUILDING 5-SEED QUANTILE ENSEMBLE (pre-determined rule) ===")
     seed_panels = []
     for seed in config.VALIDATION_SEEDS:
         sp = pd.read_csv(seed_panel_files[seed])
@@ -215,7 +215,7 @@ def main():
     ens_panel.to_csv("test_tft_predictions_panel.csv", index=False)
     nifty_ens = ens_panel[ens_panel["ticker"] == "NIFTY50"].copy()
     nifty_ens.to_csv("test_tft_predictions.csv", index=False)
-    print(f"[CANONICAL] 3-seed ENSEMBLE panel written to test_tft_predictions_panel.csv "
+    print(f"[CANONICAL] 5-seed ENSEMBLE panel written to test_tft_predictions_panel.csv "
           f"({len(ens_panel)} rows across {ens_panel['ticker'].nunique()} tickers)")
 
     # Ensemble metrics per asset (computed once on the predetermined ensemble)
@@ -230,7 +230,7 @@ def main():
                             f"(Reg-Inspired Binomial Zone {m['coverage_zone']}), "
                             f"Kupiec p={m['kupiec_p_value']:.4f}, "
                             f"DM={m['dm_stat']:.4f} (p={m['dm_p_value']:.4f})")
-    report_lines.append("NOTE: canonical tables use the pre-determined 3-seed ensemble, "
+    report_lines.append("NOTE: canonical tables use the pre-determined 5-seed ensemble, "
                         "never a test-selected seed.")
     report_lines.append("")
 

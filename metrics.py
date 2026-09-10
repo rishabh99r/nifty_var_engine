@@ -340,7 +340,7 @@ def christoffersen_independence_test(actual, var_pred):
     T = len(hits)
 
     if T < 2 or np.sum(hits) < 2:
-        return {"stat": 0.0, "p_value": 1.0, "n00": 0, "n01": 0, "n10": 0, "n11": 0}
+        return {"stat": np.nan, "p_value": np.nan, "n00": 0, "n01": 0, "n10": 0, "n11": 0}
 
     h_lag = hits[:-1]
     h_curr = hits[1:]

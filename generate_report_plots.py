@@ -8,7 +8,7 @@
 #     causal integrity -- separate from the timezone-shifted ML features.
 #   - GARCH skew-t degrees of freedom are robustly extracted via
 #     metrics.extract_garch_dist_params(), never positionally.
-#   - The audit table reports the pre-determined 3-seed ENSEMBLE trajectory and,
+#   - The audit table reports the pre-determined 5-seed ENSEMBLE trajectory and,
 #     in the master report, per-seed dispersion.
 #   - The tail-shape column is a descriptive "Tail Exceedance Depth" diagnostic
 #     (S7), NOT a formal McNeil-Frey Expected Shortfall backtest.
@@ -346,7 +346,7 @@ def export_complete_test_suite(panel_df, garch_params, granger_params):
         rows.append({
             "Asset": sym,
             "Observations": m["total_obs"],
-            "Breaches (3-seed ensemble)": m["breaches"],
+            "Breaches (5-seed ensemble)": m["breaches"],
             "Expected Breaches": exp_breaches,
             "Breach Rate (%)": f"{breach_pct:.2f}%",
             "Binomial Coverage Zone": m["coverage_zone"],
@@ -378,7 +378,7 @@ def export_complete_test_suite(panel_df, garch_params, granger_params):
         f.write("      REGULATORY-INSPIRED 99% VAR BACKTESTING REPORT\n")
         f.write("      (Econometrically-Conditioned TFT)\n")
         f.write("=" * 80 + "\n\n")
-        f.write("NOTE: This table reports the pre-determined 3-seed ENSEMBLE forecast\n")
+        f.write("NOTE: This table reports the pre-determined 5-seed ENSEMBLE forecast\n")
         f.write("(mean-of-seed q=0.01 forecast across seeds), not a cherry-picked seed.\n")
         f.write("Terminology (S7): 'Regulatory-Inspired Binomial Zone' is a custom,\n")
         f.write("sample-size-adapted binomial classification -- NOT the formal Basel\n")
