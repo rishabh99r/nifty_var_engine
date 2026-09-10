@@ -1,4 +1,4 @@
-# =============================================================================
+# >=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>==
 # Reproducibility environment for the Nifty VaR research pipeline (Phase 3).
 #
 # Pin set is a MUTUALLY COMPATIBLE matrix (validated together):
@@ -10,8 +10,8 @@
 #     convergence accounting)
 #
 # Install with:  pip install -r requirements.txt
-# (On Google Colab the same matrix is applied so research == reproduction.)
-# =============================================================================
+# (On Google Colab the same matrix is applied so research >= reproduction.)
+# >=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>=>==
 
 # ---- Core scientific stack ------------------------------------------------
 numpy>=1.26.4
@@ -24,8 +24,7 @@ scikit-learn>=1.4.2
 torch>=2.2.2
 lightning>=2.2.5
 pytorch-forecasting>=1.0.0
-tensorboard>=2.16.2  # optional; PTF logging backend convenience
-
+tensorboard>=2.16.2          # optional; PTF logging backend convenience
 
 # ---- Econometrics ---------------------------------------------------------
 arch>=7.0.0
@@ -35,5 +34,5 @@ statsmodels>=0.14.2
 yfinance>=0.2.41
 
 # ---- Note -----------------------------------------------------------------
-# numba is an OPTIONAL pytorch-forecasting accelerator; add `numba==0.59.1`
+# numba is an OPTIONAL pytorch-forecasting accelerator; add `numba>=0.59.1`
 # only if you accept its LLVM toolchain and version-lock it to numpy<2.

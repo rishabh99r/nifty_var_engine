@@ -7,28 +7,28 @@ Seeds aggregated: [42, 123, 777, 2027, 31415]
 --------------------------------------------------------------------------------
 Feature                | Importance (% mean+/-std)  | Category
 --------------------------------------------------------------------------------
-GK_Vol                 |      32.36 +/- 27.77% | Intraday Range Volatility
-Log_Ret_Feature        |      17.96 +/- 15.96% | Autoregressive Target History
-US_VIX_Diff            |      14.97 +/- 14.15% | Cross-Border Macro Spillover (lagged 2)
-relative_time_idx      |      14.94 +/- 17.09% | Temporal Indexing
-India_VIX_Diff         |      11.57 +/-  7.01% | Domestic Volatility (India VIX or RV proxy)
-GARCH_sigma            |       8.20 +/-  4.25% | Econometric Volatility Prior
+GK_Vol                 |      35.62 +/- 27.16% | Intraday Range Volatility
+Log_Ret_Feature        |      16.38 +/- 13.45% | Autoregressive Target History
+relative_time_idx      |      14.86 +/- 17.19% | Temporal Indexing
+US_VIX_Diff            |      13.26 +/- 11.09% | Cross-Border Macro Spillover (lagged 2)
+India_VIX_Diff         |      11.26 +/-  5.61% | Domestic Volatility (India VIX or RV proxy)
+GARCH_sigma            |       8.61 +/-  4.31% | Econometric Volatility Prior
 
 
 2. MULTI-HEAD TEMPORAL ATTENTION (top-10 lags)
 --------------------------------------------------------------------------------
 Lookback Lag         | Attention Weight (% mean+/-std)
 --------------------------------------------------------------------------------
-Lag  1 day(s) prior        |    10.93 +/-  2.25%
-Lag  2 day(s) prior        |    10.67 +/-  1.72%
-Lag  3 day(s) prior        |    10.50 +/-  1.36%
-Lag  4 day(s) prior        |    10.30 +/-  0.92%
-Lag  5 day(s) prior        |    10.07 +/-  0.41%
-Lag  6 day(s) prior        |     9.87 +/-  0.38%
-Lag  7 day(s) prior        |     9.65 +/-  0.85%
-Lag  8 day(s) prior        |     9.58 +/-  1.27%
-Lag  9 day(s) prior        |     9.50 +/-  1.62%
-Lag 10 day(s) prior        |     8.92 +/-  2.80%
+Lag  1 day(s) prior        |     9.41 +/-  0.87%
+Lag  2 day(s) prior        |     9.43 +/-  0.86%
+Lag  3 day(s) prior        |     9.45 +/-  0.83%
+Lag  4 day(s) prior        |     9.45 +/-  0.84%
+Lag  5 day(s) prior        |     9.42 +/-  0.87%
+Lag  6 day(s) prior        |     9.49 +/-  0.84%
+Lag  7 day(s) prior        |     9.63 +/-  0.77%
+Lag  8 day(s) prior        |     9.98 +/-  0.51%
+Lag  9 day(s) prior        |    10.73 +/-  0.76%
+Lag 10 day(s) prior        |    13.01 +/-  5.45%
 ================================================================================
 NOTE: Low cross-seed std indicates the network's attention
 structure is a robust structural invariant, not an artifact of

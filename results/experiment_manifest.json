@@ -1,0 +1,177 @@
+{
+  "seed_42": {
+    "seed": 42,
+    "checkpoint_path": "/content/drive/MyDrive/GARCH_TFT_Results/ectft_seed42_epoch=07_val_loss=0.2870-v1.ckpt",
+    "val_loss": 0.28703147172927856,
+    "git_commit": "ae122ae949507977b46899e576f4e4a441d07637",
+    "dataset_cutoff": "2026-09-07",
+    "feature_spec": {
+      "known": [
+        "GARCH_sigma",
+        "US_VIX_Diff",
+        "India_VIX_Diff"
+      ],
+      "unknown": [
+        "Log_Ret_Feature",
+        "GK_Vol"
+      ],
+      "encoder_length": 10,
+      "backtest_days": 500,
+      "dataset_cutoff": "2026-09-07",
+      "attention_heads": 4,
+      "quantiles": [
+        0.01,
+        0.5,
+        0.99
+      ]
+    },
+    "max_epochs": 80,
+    "hidden_size": 64,
+    "dropout": 0.3354115,
+    "learning_rate": 0.00158829,
+    "batch_size": 64,
+    "optimizer": "adam",
+    "gradient_clip": 0.1,
+    "timestamp": "2026-09-10T20:15:14.810461"
+  },
+  "seed_123": {
+    "seed": 123,
+    "checkpoint_path": "/content/drive/MyDrive/GARCH_TFT_Results/ectft_seed123_epoch=09_val_loss=0.2904-v1.ckpt",
+    "val_loss": 0.2903848886489868,
+    "git_commit": "ae122ae949507977b46899e576f4e4a441d07637",
+    "dataset_cutoff": "2026-09-07",
+    "feature_spec": {
+      "known": [
+        "GARCH_sigma",
+        "US_VIX_Diff",
+        "India_VIX_Diff"
+      ],
+      "unknown": [
+        "Log_Ret_Feature",
+        "GK_Vol"
+      ],
+      "encoder_length": 10,
+      "backtest_days": 500,
+      "dataset_cutoff": "2026-09-07",
+      "attention_heads": 4,
+      "quantiles": [
+        0.01,
+        0.5,
+        0.99
+      ]
+    },
+    "max_epochs": 80,
+    "hidden_size": 64,
+    "dropout": 0.3354115,
+    "learning_rate": 0.00158829,
+    "batch_size": 64,
+    "optimizer": "adam",
+    "gradient_clip": 0.1,
+    "timestamp": "2026-09-10T20:16:55.529585"
+  },
+  "seed_777": {
+    "seed": 777,
+    "checkpoint_path": "/content/drive/MyDrive/GARCH_TFT_Results/ectft_seed777_epoch=02_val_loss=0.2881-v1.ckpt",
+    "val_loss": 0.2881253659725189,
+    "git_commit": "ae122ae949507977b46899e576f4e4a441d07637",
+    "dataset_cutoff": "2026-09-07",
+    "feature_spec": {
+      "known": [
+        "GARCH_sigma",
+        "US_VIX_Diff",
+        "India_VIX_Diff"
+      ],
+      "unknown": [
+        "Log_Ret_Feature",
+        "GK_Vol"
+      ],
+      "encoder_length": 10,
+      "backtest_days": 500,
+      "dataset_cutoff": "2026-09-07",
+      "attention_heads": 4,
+      "quantiles": [
+        0.01,
+        0.5,
+        0.99
+      ]
+    },
+    "max_epochs": 80,
+    "hidden_size": 64,
+    "dropout": 0.3354115,
+    "learning_rate": 0.00158829,
+    "batch_size": 64,
+    "optimizer": "adam",
+    "gradient_clip": 0.1,
+    "timestamp": "2026-09-10T20:17:58.349297"
+  },
+  "seed_2027": {
+    "seed": 2027,
+    "checkpoint_path": "/content/drive/MyDrive/GARCH_TFT_Results/ectft_seed2027_epoch=05_val_loss=0.2889-v1.ckpt",
+    "val_loss": 0.28889229893684387,
+    "git_commit": "ae122ae949507977b46899e576f4e4a441d07637",
+    "dataset_cutoff": "2026-09-07",
+    "feature_spec": {
+      "known": [
+        "GARCH_sigma",
+        "US_VIX_Diff",
+        "India_VIX_Diff"
+      ],
+      "unknown": [
+        "Log_Ret_Feature",
+        "GK_Vol"
+      ],
+      "encoder_length": 10,
+      "backtest_days": 500,
+      "dataset_cutoff": "2026-09-07",
+      "attention_heads": 4,
+      "quantiles": [
+        0.01,
+        0.5,
+        0.99
+      ]
+    },
+    "max_epochs": 80,
+    "hidden_size": 64,
+    "dropout": 0.3354115,
+    "learning_rate": 0.00158829,
+    "batch_size": 64,
+    "optimizer": "adam",
+    "gradient_clip": 0.1,
+    "timestamp": "2026-09-10T20:19:17.398425"
+  },
+  "seed_31415": {
+    "seed": 31415,
+    "checkpoint_path": "/content/drive/MyDrive/GARCH_TFT_Results/ectft_seed31415_epoch=06_val_loss=0.2884-v1.ckpt",
+    "val_loss": 0.28838449716567993,
+    "git_commit": "ae122ae949507977b46899e576f4e4a441d07637",
+    "dataset_cutoff": "2026-09-07",
+    "feature_spec": {
+      "known": [
+        "GARCH_sigma",
+        "US_VIX_Diff",
+        "India_VIX_Diff"
+      ],
+      "unknown": [
+        "Log_Ret_Feature",
+        "GK_Vol"
+      ],
+      "encoder_length": 10,
+      "backtest_days": 500,
+      "dataset_cutoff": "2026-09-07",
+      "attention_heads": 4,
+      "quantiles": [
+        0.01,
+        0.5,
+        0.99
+      ]
+    },
+    "max_epochs": 80,
+    "hidden_size": 64,
+    "dropout": 0.3354115,
+    "learning_rate": 0.00158829,
+    "batch_size": 64,
+    "optimizer": "adam",
+    "gradient_clip": 0.1,
+    "timestamp": "2026-09-10T20:20:42.315989"
+  }
+}

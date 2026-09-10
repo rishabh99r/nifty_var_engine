@@ -1,0 +1,19 @@
+{
+  "best_value": 0.28704145550727844,
+  "best_params": {
+    "hidden_size": 64,
+    "attention_heads": 4,
+    "encoder_length": 10,
+    "dropout": 0.33541149995919195,
+    "learning_rate": 0.0015882886211970053,
+    "seed": 46,
+    "max_epochs": 40,
+    "target_quantiles": [
+      0.01,
+      0.5,
+      0.99
+    ]
+  },
+  "n_trials": 20,
+  "study_seed": 42
+}
