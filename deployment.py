@@ -9,9 +9,9 @@
 #     parameters on the trailing LOOKBACK_DAYS window and persist them, so the
 #     PIT filter reflects fresh parameters.
 #   - EVERY 126 TRADING DAYS (TFT_RETRAIN_DAYS, ~6 months): re-run main.py to
-#     retrain the 3-seed TFT on the full available history (up to a cap) with
+#     retrain the 5-seed TFT on the full available history (up to a cap) with
 #     the standard temporal split discipline. The canonical forecast is the
-#     3-seed ENSEMBLE (S5: ensemble-only, no median-seed path).
+#     5-seed ENSEMBLE (S5: ensemble-only, no median-seed path).
 #
 # Cadence bookkeeping lives in deployment_state.json (see config constants).
 # This orchestrator decides WHAT to do on a given invocation based on the last
@@ -100,7 +100,7 @@ def run_deployment(do_forecast=True, force_garch_refit=False, force_tft_retrain=
       1. Rebuild/refresh the master buffer through today (PRODUCTION end date).
       2. Decide GARCH refit (every 21 trading days) and/or TFT retrain
          (every 126 trading days) based on cadence state.
-      3. Run live inference from the 3-seed ENSEMBLE checkpoints (manifest-
+      3. Run live inference from the 5-seed ENSEMBLE checkpoints (manifest-
          first deterministic discovery).
 
     NOTE: This is a manual-triggered full-data reconstruction with cadence
@@ -141,7 +141,7 @@ def run_deployment(do_forecast=True, force_garch_refit=False, force_tft_retrain=
         # main.py itself records last_tft_retrain_idx / ensemble provenance.
         state = _load_state()  # reload (main.py updated it)
         actions["tft_retrain"] = True
-        print(f"[DEPLOY] TFT retrained; canonical forecast = 3-seed ENSEMBLE "
+        print(f"[DEPLOY] TFT retrained; canonical forecast = 5-seed ENSEMBLE "
               f"(provenance seed {state.get('retrain_provenance_seed')}).")
 
     # 3. Run live forecast using the ENSEMBLE of seed checkpoints

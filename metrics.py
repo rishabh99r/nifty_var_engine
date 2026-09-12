@@ -335,7 +335,14 @@ def audit_quantile_monotonicity(q01, q50, q99, raise_on_violation=False):
 
 
 def christoffersen_independence_test(actual, var_pred):
-    """Christoffersen Markov Interval Independence Test (LR_ind)."""
+    """
+    Christoffersen Markov Interval Independence Test (LR_ind).
+
+    T3 (statistical honesty): when there are FEWER THAN 2 breaches (or fewer
+    than 2 observations), the transition-count test is degenerate -- the
+    p-value is returned as NaN (never a spurious 1.0 or 0.0), signalling
+    "not testable" rather than "no evidence of clustering".
+    """
     hits = (actual < var_pred).astype(int)
     T = len(hits)
 

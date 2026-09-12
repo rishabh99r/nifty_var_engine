@@ -175,10 +175,12 @@ def plot_vsn_importance(vsn_agg):
     return out
 
 
-def plot_temporal_attention(attn_agg, encoder_len=21):
+def plot_temporal_attention(attn_agg, encoder_len=10):
     """
     Publication figure: mean temporal attention weight per lookback lag with a
     horizontal reference line at uniform attention (1/encoder_len).
+    Default encoder_len=10 matches the Optuna-optimized lookback window
+    (config.ENCODER_LENGTH = 10).
 
     Purpose (Reviewer #20): shows whether the network concentrates attention on
     the most recent volatility shocks (t-1, t-2) versus a flat multi-week
