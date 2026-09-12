@@ -28,6 +28,26 @@ from tft_model import train_tft
 from predict_utils import unpack_predictions
 from metrics import calculate_metrics, audit_quantile_monotonicity
 
+# ---------------------------------------------------------------------------
+# Patch pytorch_forecasting bug when target_quantiles does not include 0.5.
+# QuantileLoss.to_prediction() defaults to the MEDIAN (q=0.5) quantile, which
+# does not exist for the q0.01-SPECIALIST model (quantiles=[0.01] only) --
+# without this patch, any call to to_prediction() would index out of range.
+# The fallback returns the first (only) quantile instead.
+# ---------------------------------------------------------------------------
+import pytorch_forecasting.metrics.quantile as qm
+
+
+def _safe_to_prediction(self, y_pred, *args, **kwargs):
+    if 0.5 in self.quantiles:
+        idx = self.quantiles.index(0.5)
+    else:
+        idx = 0
+    return y_pred[..., idx]
+
+
+qm.QuantileLoss.to_prediction = _safe_to_prediction
+
 ASSETS = list(config.TICKERS.keys())
 Q01 = 0.01
 AGG_QUANTILES = [0.01, 0.50, 0.99]
