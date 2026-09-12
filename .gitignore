@@ -21,3 +21,7 @@ __pycache__/
 *.csv
 *.parquet
 *.db
+
+lightning_logs/
+checkpoints/
+ignore__other_results/
