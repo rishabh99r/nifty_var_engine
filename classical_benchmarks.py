@@ -45,36 +45,85 @@ def fit_caviar(train_returns, test_returns):
     full_var = asymmetric_caviar(res.x, full_returns, Q)
     return full_var[-len(test_returns):], res.x
 
-def compute_mcs_heuristic(loss_df, alpha=0.10):
+def compute_formal_hln_mcs(loss_df, alpha=0.10, B=1000, block_size=10):
     """
-    Simplified Model Confidence Set (MCS) heuristic based on pairwise DM tests.
-    Iteratively eliminates the worst model until all remaining models are
-    statistically indistinguishable (p > alpha) from the best remaining model.
+    Formal Hansen-Lunde-Nason (2011) Model Confidence Set.
+
+    Uses a Stationary Block Bootstrap to control the Family-Wise Error Rate
+    (FWER) while preserving the time-series autocorrelation in the VaR losses.
+    The T_max statistic is used: at each elimination round the model with the
+    largest (worst) t-statistic is removed if the bootstrap p-value < alpha;
+    the procedure stops when no further model can be rejected, yielding the
+    MCS "superior set" of statistically indistinguishable models.
+
+    Returns the list of surviving model names.
     """
     active_models = list(loss_df.columns)
+    losses = loss_df.values
+    T = len(losses)
+
+    # Degenerate guard: with too few observations for a block bootstrap, the
+    # MCS is not identifiable -- return all models (no elimination).
+    if T <= block_size:
+        return active_models
+
+    # 1. Generate Stationary Block Bootstrap indices.
+    #    This preserves the time-series autocorrelation in the VaR losses.
+    boot_indices = np.random.randint(0, T - block_size + 1, size=(B, T // block_size + 1))
+    boot_indices = (boot_indices[:, :, None] + np.arange(block_size)).reshape(B, -1)[:, :T]
 
     while len(active_models) > 1:
-        # Calculate mean losses
-        mean_losses = loss_df[active_models].mean()
-        best_model = mean_losses.idxmin()
-        worst_model = mean_losses.idxmax()
+        active_losses = loss_df[active_models].values
 
-        # DM Test: Worst vs Best
-        d_t = loss_df[worst_model] - loss_df[best_model]
-        d_bar = d_t.mean()
-        var_d = d_t.var() / len(d_t) # Simplified variance (no HAC for speed)
+        # 2. Compute differentials from the mean of active models.
+        mean_active = active_losses.mean(axis=1, keepdims=True)
+        d_i = active_losses - mean_active
+        d_i_mean = d_i.mean(axis=0)
 
-        if var_d == 0: break
+        # 3. Bootstrap the differentials.
+        boot_d_i = np.zeros((B, len(active_models)))
+        for b in range(B):
+            boot_d_i[b] = d_i[boot_indices[b]].mean(axis=0)
 
-        t_stat = d_bar / np.sqrt(var_d)
-        p_val = 2 * (1 - stats.norm.cdf(abs(t_stat)))
+        var_d_i = boot_d_i.var(axis=0, ddof=1)
+        var_d_i = np.maximum(var_d_i, 1e-10)  # Guard against zero variance
 
+        # 4. T_max statistic.
+        t_stats = d_i_mean / np.sqrt(var_d_i / T)
+        t_max = t_stats.max()
+        worst_idx = int(t_stats.argmax())
+
+        # 5. Bootstrap p-value under the null (centered).
+        boot_centered = boot_d_i - d_i_mean
+        boot_t_stats = boot_centered / np.sqrt(var_d_i / T)
+        boot_t_max = boot_t_stats.max(axis=1)
+
+        p_val = np.mean(boot_t_max >= t_max)
+
+        # 6. Elimination rule.
         if p_val < alpha:
-            active_models.remove(worst_model) # Eliminate worst
+            active_models.pop(worst_idx)
         else:
-            break # Superior set found
+            break
 
     return active_models
+
+def get_tft_col(df):
+    """
+    Robustly locates the TFT VaR column in an ablation ensemble panel.
+
+    The ablation runner writes the ensemble q0.01 as 'TFT_q01' (PyTorch
+    Forecasting's quantile naming); older panels used 'TFT_VaR_99_Ensemble' /
+    'TFT_VaR_99' / 'TFT_VaR_99_Raw' / 'TFT_Downside_99'. This helper tries the
+    known names in order and raises a clear KeyError listing the actual columns
+    if none match -- so a schema drift fails loudly instead of a silent NaN.
+    """
+    candidates = ['TFT_q01', 'TFT_VaR_99_Ensemble', 'TFT_VaR_99', 'TFT_VaR_99_Raw', 'TFT_Downside_99']
+    for col in candidates:
+        if col in df.columns:
+            return col
+    raise KeyError(f"Could not find TFT VaR column in {list(df.columns)}")
+
 
 def main():
     print("=== RUNNING CLASSICAL BENCHMARKS & MCS ===")
@@ -114,11 +163,17 @@ def main():
         caviar_oos, caviar_beta = fit_caviar(train_ret, test_ret)
         print(f"  CAViaR Beta: {np.round(caviar_beta, 4)}")
 
-        # Extract existing forecasts
+        # Extract existing forecasts (robust column lookup -- the ablation
+        # panels name the ensemble q0.01 'TFT_q01', not 'TFT_VaR_99_Ensemble').
         garch_oos = test_sub['GARCH_VaR_99'].values
-        tft_raw = models_data["1_Raw_TFT"][models_data["1_Raw_TFT"]['ticker'] == ticker]['TFT_VaR_99_Ensemble'].values
-        tft_garch = models_data["2_GARCH_TFT"][models_data["2_GARCH_TFT"]['ticker'] == ticker]['TFT_VaR_99_Ensemble'].values
-        tft_full = models_data["5_Full_ECTFT"][models_data["5_Full_ECTFT"]['ticker'] == ticker]['TFT_VaR_99_Ensemble'].values
+
+        df_raw = models_data["1_Raw_TFT"]
+        df_garch = models_data["2_GARCH_TFT"]
+        df_full = models_data["5_Full_ECTFT"]
+
+        tft_raw = df_raw[df_raw['ticker'] == ticker][get_tft_col(df_raw)].values
+        tft_garch = df_garch[df_garch['ticker'] == ticker][get_tft_col(df_garch)].values
+        tft_full = df_full[df_full['ticker'] == ticker][get_tft_col(df_full)].values
 
         # Construct Loss DataFrame for MCS
         loss_df = pd.DataFrame({
@@ -130,8 +185,8 @@ def main():
             "Full_ECTFT": pinball_loss(test_ret, tft_full, Q)
         })
 
-        # Run MCS Heuristic
-        superior_set = compute_mcs_heuristic(loss_df)
+        # Run the formal Hansen-Lunde-Nason (2011) MCS with block bootstrap.
+        superior_set = compute_formal_hln_mcs(loss_df)
         print(f"  Superior Set (alpha=0.10): {superior_set}")
 
         # Calculate standard metrics for new benchmarks

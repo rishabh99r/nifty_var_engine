@@ -199,9 +199,11 @@ def plot_all_granger_spillover(master_df):
         # Granger-causes Col 0. So [["dom","us"]] = "US -> dom" (forward) and
         # [["us","dom"]] = "dom -> US" (reverse). Do not reorder casually.
         # Forward: US VIX -> Domestic volatility
-        res_fwd = grangercausalitytests(clean_df[["dom", "us"]], maxlag=5, verbose=False)
+        # NOTE (statsmodels 0.14.2): `verbose` was removed from
+        # grangercausalitytests -- omit it to avoid a TypeError.
+        res_fwd = grangercausalitytests(clean_df[["dom", "us"]], maxlag=5)
         # Reverse: Domestic -> US VIX
-        res_rev = grangercausalitytests(clean_df[["us", "dom"]], maxlag=5, verbose=False)
+        res_rev = grangercausalitytests(clean_df[["us", "dom"]], maxlag=5)
 
         p_fwd = [res_fwd[l][0]["ssr_chi2test"][1] for l in lags]
         p_rev = [res_rev[l][0]["ssr_chi2test"][1] for l in lags]

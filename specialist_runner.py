@@ -75,6 +75,26 @@ def _score(panel, tft_q_col="TFT_q01"):
     return out
 
 
+def _load_hpo_params(hpo_json):
+    """
+    Loads the best HPO architecture from hpo_best_trial.json, tolerating BOTH
+    schemas:
+      (a) flat dict  -> {"hidden_size": 64, "attention_head_size": 4, ...}
+      (b) nested     -> {"best_value": ..., "best_params": {...}}
+    Normalizes 'attention_head_size' -> 'attention_heads' (the train_tft arg).
+    """
+    with open(hpo_json) as f:
+        data = json.load(f)
+    if isinstance(data, dict) and "best_params" in data:
+        hp = dict(data["best_params"])
+    else:
+        hp = dict(data)
+    # Normalize the attention-heads key name.
+    if "attention_head_size" in hp and "attention_heads" not in hp:
+        hp["attention_heads"] = hp.pop("attention_head_size")
+    return hp
+
+
 def run_specialist(hpo_json="hpo_best_trial.json", seed=42, max_epochs=None):
     if max_epochs is None:
         max_epochs = config.MAX_EPOCHS
@@ -83,11 +103,9 @@ def run_specialist(hpo_json="hpo_best_trial.json", seed=42, max_epochs=None):
             f"[FATAL] {hpo_json} not found. Run hpo_runner.py first to get the "
             f"best architecture."
         )
-    with open(hpo_json) as f:
-        best = json.load(f)
-    hp = best["best_params"]
+    hp = _load_hpo_params(hpo_json)
     print("===== q0.01-SPECIALIST vs AGGREGATE OBJECTIVE =====")
-    print(f"[HPO] Best architecture: {hp} (val_loss={best['best_value']:.6f})")
+    print(f"[HPO] Best architecture: {hp}")
 
     if not os.path.exists("master_df.csv"):
         raise FileNotFoundError("[FATAL] master_df.csv not found. Run build_data.py first.")

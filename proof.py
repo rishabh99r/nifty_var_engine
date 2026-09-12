@@ -98,11 +98,14 @@ def run_empirical_proofs(df_path="master_df.csv", max_lag=5):
     # has predictive precedence for Col 0. So [["dom","us"]] = "US -> dom"
     # (forward) and [["us","dom"]] = "dom -> US" (reverse). "Granger" here means
     # predictive precedence, NOT structural causation (S7).
+    # NOTE (statsmodels 0.14.2): the `verbose` argument was REMOVED from
+    # grangercausalitytests -- passing it raises a TypeError in modern
+    # environments. Omit it entirely.
     print(f"  -> Forward: US VIX predictive precedence for {domestic_label}")
-    res_forward = grangercausalitytests(clean_df[["dom", "us"]], maxlag=max_lag, verbose=False)
+    res_forward = grangercausalitytests(clean_df[["dom", "us"]], maxlag=max_lag)
 
     print(f"  -> Reverse: {domestic_label} predictive precedence for US VIX")
-    res_reverse = grangercausalitytests(clean_df[["us", "dom"]], maxlag=max_lag, verbose=False)
+    res_reverse = grangercausalitytests(clean_df[["us", "dom"]], maxlag=max_lag)
 
     print("\n--- Granger Predictive-Precedence Matrix (p-values) ---")
     print("    [S9 caveat: unadjusted p-values, exploratory; family not Holm-corrected]")

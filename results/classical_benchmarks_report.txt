@@ -1,0 +1,29 @@
+=== CLASSICAL BENCHMARKS & MODEL CONFIDENCE SET ===
+    Asset      Model       Breaches  Kupiec p      DQ p  Mean Loss In Superior Set
+  NIFTY50     HS_250              9   0.10602       0.0   0.029006             Yes
+  NIFTY50     CAViaR              0  0.001523       NaN   0.034833              No
+  NIFTY50  GJR-GARCH See Main Table       N/A       N/A   0.024843             Yes
+  NIFTY50    Raw_TFT See Main Table       N/A       N/A   0.026937             Yes
+  NIFTY50  GARCH_TFT See Main Table       N/A       N/A   0.026055             Yes
+  NIFTY50 Full_ECTFT See Main Table       N/A       N/A   0.025271             Yes
+BANKNIFTY     HS_250             10  0.047896       0.0   0.037654             Yes
+BANKNIFTY     CAViaR              0  0.001523       NaN   0.049585              No
+BANKNIFTY  GJR-GARCH See Main Table       N/A       N/A   0.029488             Yes
+BANKNIFTY    Raw_TFT See Main Table       N/A       N/A   0.029662             Yes
+BANKNIFTY  GARCH_TFT See Main Table       N/A       N/A   0.030376             Yes
+BANKNIFTY Full_ECTFT See Main Table       N/A       N/A   0.028843             Yes
+  NIFTYIT     HS_250             11  0.019918  0.011473   0.058137             Yes
+  NIFTYIT     CAViaR              7   0.39657  0.963094   0.055146             Yes
+  NIFTYIT  GJR-GARCH See Main Table       N/A       N/A   0.052884             Yes
+  NIFTYIT    Raw_TFT See Main Table       N/A       N/A   0.054173             Yes
+  NIFTYIT  GARCH_TFT See Main Table       N/A       N/A   0.050262             Yes
+  NIFTYIT Full_ECTFT See Main Table       N/A       N/A   0.053762             Yes
+
+=== REGIME ANALYSIS (High vs Normal Volatility) ===
+    Asset            Regime  Obs  GARCH Mean Loss  TFT Mean Loss
+  NIFTY50   High Volatility   49         0.045245       0.041000
+  NIFTY50 Normal Volatility  451         0.022626       0.023562
+BANKNIFTY   High Volatility   25         0.055082       0.052229
+BANKNIFTY Normal Volatility  475         0.028141       0.027612
+  NIFTYIT   High Volatility  195         0.068657       0.072500
+  NIFTYIT Normal Volatility  305         0.042799       0.041781
