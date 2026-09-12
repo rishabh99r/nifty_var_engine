@@ -148,6 +148,11 @@ def plot_vsn_importance(vsn_agg):
     ax.set_yticklabels(labels, fontsize=9)
     ax.invert_yaxis()
     ax.set_xlabel("VSN selection weight (% of encoder variables)", fontsize=10)
+    # Text-overlap fix: pad the x-axis so the value labels (placed past the
+    # error bars at mean+std+0.5) are never clipped. Uses the real column
+    # 'mean' (the aggregation column), not a non-existent 'mean_weight'.
+    # INCREASED PADDING TO 1.35 TO PREVENT TEXT CLIPPING ON RIGHT EDGE.
+    ax.set_xlim(0, float(df["mean"].max()) * 1.35)
     ax.set_title("Variable Selection Network: Feature Importance\n"
                  "(mean +/- std across 5 seeds)", fontsize=11)
     # VSN label placement fix: place the text PAST the error bar so a large
@@ -155,9 +160,9 @@ def plot_vsn_importance(vsn_agg):
     for xi, si, yi in zip(df["mean"].values, df["std"].values, y):
         text_x_pos = float(xi) + float(si) + 0.5
         ax.text(text_x_pos, yi, f"{xi:.1f}%", va="center", fontsize=8)
-    # Extend the x-axis so the std-offset labels are not clipped.
+    # Ensure the x-axis also covers the std-offset labels (mean+std+0.5).
     max_text = float((df["mean"] + df["std"]).max()) + 2.0
-    ax.set_xlim(0, min(115, max(max_text, float(df["mean"].max()) * 1.25 + 5)))
+    ax.set_xlim(0, min(115, max(max_text, float(df["mean"].max()) * 1.35)))
     fig.tight_layout()
 
     # Save locally + to Drive OUTPUT_DIR

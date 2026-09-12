@@ -1,21 +1,6 @@
 # generate_report_plots.py
-# =============================================================================
-# Publication figure generation and audit report export.
-#
-# Methodology fixes applied:
-#   - Granger predictive-precedence tests use the STRICT *_NativeDiff columns
-#     (UN-shifted, inner-joined on shared trading dates -- S4) to preserve
-#     causal integrity -- separate from the timezone-shifted ML features.
-#   - GARCH skew-t degrees of freedom are robustly extracted via
-#     metrics.extract_garch_dist_params(), never positionally.
-#   - The audit table reports the pre-determined 5-seed ENSEMBLE trajectory and,
-#     in the master report, per-seed dispersion.
-#   - The tail-shape column is a descriptive "Tail Exceedance Depth" diagnostic
-#     (S7), NOT a formal McNeil-Frey Expected Shortfall backtest.
-# =============================================================================
 import os
 import warnings
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -25,436 +10,218 @@ from statsmodels.tsa.stattools import grangercausalitytests
 
 import config
 from metrics import (
-    calculate_metrics,
-    evaluate_panel_metrics,
-    extract_garch_dist_params,
-    granger_series_from_panel,
-    granger_diagnostics,
-    _fmt_p,
-    _fmt_pct,
+    calculate_metrics, evaluate_panel_metrics, extract_garch_dist_params,
+    granger_series_from_panel, granger_diagnostics, _fmt_p, _fmt_pct
 )
 
 warnings.filterwarnings("ignore")
 plt.style.use("seaborn-v0_8-whitegrid")
 plt.rcParams.update({
-    "font.family": "serif",
-    "font.size": 10,
-    "axes.labelsize": 11,
-    "axes.titlesize": 12,
-    "figure.autolayout": False,
+    "font.family": "serif", "font.size": 10,
+    "axes.labelsize": 11, "axes.titlesize": 12, "figure.autolayout": False,
 })
 
-OUTPUT_DIR = config.OUTPUT_DIR + "/"
+OUTPUT_DIR = getattr(config, "OUTPUT_DIR", ".") + "/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-TICKERS = ["NIFTY50", "BANKNIFTY", "NIFTYIT"]
-
+TICKERS = list(config.TICKERS.keys())
+Q = 0.01
 
 def compute_pinball_loss(y_true, y_pred, q=0.01):
     diff = y_true - y_pred
     return np.where(diff < 0, (1.0 - q) * (-diff), q * diff)
 
-
-def load_datasets(panel_file="test_tft_predictions_panel.csv", master_file="master_df.csv"):
-    if not os.path.exists(panel_file):
-        drive_path = os.path.join(OUTPUT_DIR, panel_file)
-        if os.path.exists(drive_path):
-            panel_file = drive_path
-        else:
-            raise FileNotFoundError(f"[FATAL] Missing {panel_file}. Run main.py first.")
-
-    if not os.path.exists(master_file):
-        drive_m = os.path.join(OUTPUT_DIR, master_file)
-        if os.path.exists(drive_m):
-            master_file = drive_m
-        else:
-            raise FileNotFoundError(f"[FATAL] Missing {master_file}. Run build_data.py first.")
-
-    panel_df = pd.read_csv(panel_file)
-    master_df = pd.read_csv(master_file)
-
+def load_datasets():
+    panel_df = pd.read_csv(os.path.join(OUTPUT_DIR, "test_tft_predictions_panel.csv"))
+    master_df = pd.read_csv(os.path.join(OUTPUT_DIR, "master_df.csv"))
     panel_df["Date"] = pd.to_datetime(panel_df["Date"])
     master_df["Date"] = pd.to_datetime(master_df["Date"])
 
-    if "Actual" not in panel_df.columns and "Log_Ret" in panel_df.columns:
-        panel_df["Actual"] = panel_df["Log_Ret"]
+    if "Actual" not in panel_df.columns: panel_df["Actual"] = panel_df["Log_Ret"]
+    if "TFT_Downside_99" not in panel_df.columns: panel_df["TFT_Downside_99"] = panel_df["TFT_VaR_99"]
+    if "TFT_Upside_99" not in panel_df.columns: panel_df["TFT_Upside_99"] = np.abs(panel_df["TFT_Downside_99"]) * 0.92
 
-    if "TFT_Downside_99" not in panel_df.columns:
-        panel_df["TFT_Downside_99"] = panel_df["TFT_VaR_99"]
-
-    if "TFT_Upside_99" not in panel_df.columns:
-        if "TFT_VaR_Upside" in panel_df.columns:
-            panel_df["TFT_Upside_99"] = panel_df["TFT_VaR_Upside"]
-        else:
-            panel_df["TFT_Upside_99"] = np.abs(panel_df["TFT_Downside_99"]) * 0.92
-
-    # NOTE (Round 18): GARCH_Upside_99 is a HEURISTIC reference (0.9 * |downside
-    # VaR|), NOT a real asymmetric upside quantile from the skew-t model. It is
-    # only for visual context in the risk-river figure and MUST be labelled as a
-    # heuristic, never presented as a model forecast.
     panel_df["GARCH_Upside_99_heuristic"] = np.abs(panel_df["GARCH_VaR_99"]) * 0.90
     panel_df["GARCH_Upside_99"] = panel_df["GARCH_Upside_99_heuristic"]
     return panel_df, master_df
 
-
-# =====================================================================
-# 1. DISTRIBUTION FIT (3-SERIES PANEL)
-# =====================================================================
 def plot_distribution_fits(master_df):
-    print("[PLOT 1/6] Generating Return Distribution Fits (All 3 Series)...")
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5), dpi=300, sharey=True)
-
-    for i, sym in enumerate(TICKERS):
-        ax = axes[i]
+    for sym in TICKERS:
+        fig, ax = plt.subplots(figsize=(6, 4.5), dpi=300)
         returns = master_df[master_df["ticker"] == sym]["Log_Ret"].dropna().values
-
         ax.hist(returns, bins=80, density=True, alpha=0.45, color="#7f8c8d", label="Empirical Returns")
+
         mu, std = stats.norm.fit(returns)
         x = np.linspace(-8, 8, 200)
         ax.plot(x, stats.norm.pdf(x, mu, std), "k--", linewidth=1.8, label="Normal Fit")
-
         df_t, loc_t, scale_t = stats.t.fit(returns)
         ax.plot(x, stats.t.pdf(x, df_t, loc_t, scale_t), color="#c0392b", linewidth=2.2, label=r"Student-$t$ Fit")
 
         ax.set_xlim(-7, 7)
         ax.set_title(f"{sym} (Tail df $\\nu$ = {df_t:.1f})", fontweight="bold")
         ax.set_xlabel("Daily Log Return (%)")
-        if i == 0:
-            ax.set_ylabel("Density")
-            ax.legend(frameon=True, facecolor="white", fontsize=8.5)
+        ax.set_ylabel("Density")
+        ax.legend(frameon=True, facecolor="white", fontsize=8.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, f"fig1_distribution_fit_{sym}.png"))
+        plt.close()
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "report_fig1_distribution_fit_all.png"), dpi=300)
-    plt.close()
-
-
-# =====================================================================
-# 2. NEWS IMPACT CURVES (3-SERIES PANEL) -- keyed nu extraction
-# =====================================================================
-def plot_all_news_impact_curves(master_df):
-    print("[PLOT 2/6] Generating News Impact Curves (All 3 Series)...")
-    fig, axes = plt.subplots(1, 3, figsize=(17, 4.8), dpi=300, sharey=True)
+def plot_news_impact_curves(master_df):
     garch_params_dict = {}
-
-    for i, sym in enumerate(TICKERS):
-        ax = axes[i]
+    for sym in TICKERS:
+        fig, ax = plt.subplots(figsize=(6, 4.5), dpi=300)
         returns = master_df[master_df["ticker"] == sym]["Log_Ret"].dropna().values
-        am = arch_model(returns, vol="Garch", p=1, o=1, q=1, dist="skewt")
-        res = am.fit(disp="off")
+        res = arch_model(returns, vol="Garch", p=1, o=1, q=1, dist="skewt").fit(disp="off", show_warning=False)
 
-        omega = res.params["omega"]
-        alpha = res.params["alpha[1]"]
-        gamma = res.params["gamma[1]"]
-        beta = res.params["beta[1]"]
-        # ROBUST shape-parameter extraction (handles arch naming variations)
+        p = res.params
         shape = extract_garch_dist_params(res)
-        nu = shape["nu"]
-        lam = shape["lambda"]
-        # reference_sigma is the LAST conditional volatility (NOT unconditional
-        # vol) used to anchor the news-impact curves (Round 23 rename).
-        reference_sigma = np.sqrt(np.asarray(res.conditional_volatility)[-1] ** 2)
+        ref_sigma = np.sqrt(np.asarray(res.conditional_volatility)[-1] ** 2)
         shocks = np.linspace(-6, 6, 500)
 
-        var_sym = omega + alpha * (shocks ** 2) + beta * (reference_sigma ** 2)
-        var_asym = omega + alpha * (shocks ** 2) + gamma * (shocks < 0) * (shocks ** 2) + beta * (reference_sigma ** 2)
+        var_sym = p["omega"] + p["alpha[1]"] * (shocks ** 2) + p["beta[1]"] * (ref_sigma ** 2)
+        var_asym = var_sym + p["gamma[1]"] * (shocks < 0) * (shocks ** 2)
 
-        # The dashed line is the COUNTERFACTUAL symmetric version of the fitted
-        # GJR-GARCH recursion (gamma removed), not an independently fit model.
         ax.plot(shocks, var_sym, "--", color="#7f8c8d", linewidth=1.8, label="Counterfactual Symmetric GARCH")
-        ax.plot(shocks, var_asym, color="#c0392b", linewidth=2.2, label=f"GJR-GARCH ($\\gamma$={gamma:.3f})")
+        ax.plot(shocks, var_asym, color="#c0392b", linewidth=2.2, label=f"GJR-GARCH ($\\gamma$={p['gamma[1]']:.3f})")
 
         ax.set_title(f"{sym} News Impact Curve", fontweight="bold")
         ax.set_xlabel(r"Return Shock $\varepsilon_{t-1}$ (%)")
-        if i == 0:
-            ax.set_ylabel(r"Next-Day Variance $\sigma_t^2$")
-        ax.legend(frameon=True, facecolor="white", fontsize=8.5, loc="upper center")
+        ax.set_ylabel(r"Next-Day Variance $\sigma_t^2$")
+        ax.legend(frameon=True, facecolor="white", fontsize=8.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, f"fig2_news_impact_{sym}.png"))
+        plt.close()
 
-        garch_params_dict[sym] = {"omega": omega, "alpha": alpha, "gamma": gamma, "beta": beta, "nu": nu, "lambda": lam}
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "report_fig2_news_impact_all.png"), dpi=300)
-    plt.close()
+        garch_params_dict[sym] = {"omega": p["omega"], "alpha": p["alpha[1]"], "gamma": p["gamma[1]"],
+                                  "beta": p["beta[1]"], "nu": shape["nu"], "lambda": shape["lambda"]}
     return garch_params_dict
 
-
-# =====================================================================
-# 3. GRANGER CAUSALITY on DAILY LOG-DIFFERENCES (native VIX calendar)
-# =====================================================================
-def plot_all_granger_spillover(master_df):
-    print("[PLOT 3/6] Generating Granger Predictive-Precedence Profiles (shared-date log-diffs)...")
-    fig, axes = plt.subplots(1, 3, figsize=(18, 4.8), dpi=300, sharey=True)
-    lags = [1, 2, 3, 5]
+def plot_granger_spillover(master_df):
     granger_results = {}
-
-    for i, sym in enumerate(TICKERS):
-        ax = axes[i]
+    lags = [1, 2, 3, 5]
+    for sym in TICKERS:
+        fig, ax = plt.subplots(figsize=(6, 4.5), dpi=300)
         sub = master_df[master_df["ticker"] == sym].copy()
-
-        # Use the *_Diff columns (native VIX calendar log-changes from
-        # build_data.py) so no ffill-differencing artifacts appear.
-        us_logdiff, in_logdiff, domestic_label = granger_series_from_panel(sub)
-
+        us_logdiff, in_logdiff, dom_label = granger_series_from_panel(sub)
         clean_df = pd.DataFrame({"us": us_logdiff, "dom": in_logdiff}).dropna()
 
-        # NOTE (10.4): statsmodels' grangercausalitytests tests whether Col 1
-        # Granger-causes Col 0. So [["dom","us"]] = "US -> dom" (forward) and
-        # [["us","dom"]] = "dom -> US" (reverse). Do not reorder casually.
-        # Forward: US VIX -> Domestic volatility
-        # NOTE (statsmodels 0.14.2): `verbose` was removed from
-        # grangercausalitytests -- omit it to avoid a TypeError.
         res_fwd = grangercausalitytests(clean_df[["dom", "us"]], maxlag=5)
-        # Reverse: Domestic -> US VIX
         res_rev = grangercausalitytests(clean_df[["us", "dom"]], maxlag=5)
 
         p_fwd = [res_fwd[l][0]["ssr_chi2test"][1] for l in lags]
         p_rev = [res_rev[l][0]["ssr_chi2test"][1] for l in lags]
-        diag = granger_diagnostics({"US VIX diff": clean_df["us"], "Domestic diff": clean_df["dom"]})
-        granger_results[sym] = {
-            "p_forward": p_fwd,
-            "p_reverse": p_rev,
-            "domestic_label": domestic_label,
-            "diag": diag,
-        }
 
         x = np.arange(len(lags))
-        width = 0.35
-        ax.bar(x - width / 2, -np.log10(p_fwd), width, label="US VIX $\\rightarrow$ Domestic Vol", color="#2980b9")
-        ax.bar(x + width / 2, -np.log10(p_rev), width, label="Domestic Vol $\\rightarrow$ US VIX", color="#27ae60")
+        w = 0.35
+        ax.bar(x - w/2, -np.log10(p_fwd), w, label=f"US VIX $\\rightarrow$ {dom_label}", color="#2980b9")
+        ax.bar(x + w/2, -np.log10(p_rev), w, label=f"{dom_label} $\\rightarrow$ US VIX", color="#27ae60")
         ax.axhline(-np.log10(0.05), color="#c0392b", linestyle="--", linewidth=1.5, label="Significance ($\\alpha=0.05$)")
 
-        ax.set_title(f"{sym} Cross-Border Spillover (US VIX -> {domestic_label})", fontweight="bold")
+        ax.set_title(f"{sym} Predictive Precedence", fontweight="bold")
         ax.set_xticks(x)
         ax.set_xticklabels([f"{l}D Lag" for l in lags])
         ax.set_xlabel("Lag Horizon")
-        if i == 0:
-            ax.set_ylabel(r"Significance ($-\log_{10} p$)")
-            ax.legend(frameon=True, facecolor="white", fontsize=8)
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "report_fig3_granger_spillover_all.png"), dpi=300)
-    plt.close()
-    return granger_results
-
-
-# =====================================================================
-# 4. TWO-SIDED RISK RIVER (3 INDIVIDUAL FIGURES)
-# =====================================================================
-def plot_all_risk_rivers(panel_df):
-    print("[PLOT 4/6] Generating Two-Sided Risk River Plots (All 3 Series)...")
-    for sym in TICKERS:
-        df = panel_df[panel_df["ticker"] == sym].sort_values(by="Date").set_index("Date")
-        fig, ax = plt.subplots(figsize=(11, 5.2), dpi=300)
-
-        ax.plot(df.index, df["Actual"], color="#2c3e50", linewidth=1.0, alpha=0.75, label=f"Actual {sym} Return")
-        ax.plot(df.index, df["TFT_Downside_99"], color="#c0392b", linewidth=1.8, label="ECTFT 99% Long VaR")
-        ax.plot(df.index, df["GARCH_VaR_99"], color="#e67e22", linestyle=":", linewidth=1.3, label="GJR-GARCH 99% VaR")
-        ax.plot(df.index, df["TFT_Upside_99"], color="#2980b9", linewidth=1.8, label="ECTFT 99% Short VaR")
-        ax.plot(df.index, df["GARCH_Upside_99"], color="#8e44ad", linestyle=":", linewidth=1.3,
-                label="GARCH upside heuristic (0.9x|downside|)")
-
-        ax.fill_between(df.index, df["TFT_Downside_99"], df["TFT_Upside_99"], color="#34495e", alpha=0.08, label="Safe Trading Corridor")
-
-        down_hits = df[df["Actual"] < df["TFT_Downside_99"]]
-        up_hits = df[df["Actual"] > df["TFT_Upside_99"]]
-
-        ax.scatter(down_hits.index, down_hits["Actual"], color="#c0392b", marker="v", s=45, zorder=5, label=f"Long Breaches (n={len(down_hits)})")
-        ax.scatter(up_hits.index, up_hits["Actual"], color="#2980b9", marker="^", s=45, zorder=5, label=f"Short Breaches (n={len(up_hits)})")
-
-        ax.set_title(f"Two-Sided 99% Value-at-Risk River: {sym}", fontweight="bold")
-        ax.set_ylabel("Log Return / VaR Forecast (%)")
-        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=4, frameon=True, facecolor="white", fontsize=8.5)
+        ax.set_ylabel(r"Significance ($-\log_{10} p$)")
+        ax.legend(frameon=True, facecolor="white", fontsize=8.5)
         plt.tight_layout()
-
-        plt.savefig(os.path.join(OUTPUT_DIR, f"report_fig4_risk_river_{sym}.png"), dpi=300)
+        plt.savefig(os.path.join(OUTPUT_DIR, f"fig3_predictive_precedence_{sym}.png"))
         plt.close()
 
+        granger_results[sym] = {"p_forward": p_fwd, "domestic_label": dom_label,
+                                "diag": granger_diagnostics({"US": clean_df["us"], "Dom": clean_df["dom"]})}
+    return granger_results
 
-# =====================================================================
-# 5. DOWNSIDE BACKTEST TRACKING (3-SERIES PANEL)
-# =====================================================================
-def plot_all_backtest_tracking(panel_df):
-    print("[PLOT 5/6] Generating Downside Backtest Tracking (All 3 Series)...")
-    fig, axes = plt.subplots(3, 1, figsize=(12, 11), sharex=True, dpi=300)
+def plot_risk_rivers(panel_df):
+    for sym in TICKERS:
+        df = panel_df[panel_df["ticker"] == sym].sort_values("Date").set_index("Date")
+        fig, ax = plt.subplots(figsize=(10, 4.5), dpi=300)
 
-    for i, sym in enumerate(TICKERS):
-        ax = axes[i]
-        df = panel_df[panel_df["ticker"] == sym].sort_values(by="Date")
+        ax.plot(df.index, df["Actual"], color="#2c3e50", lw=1.0, alpha=0.75, label="Return")
+        ax.plot(df.index, df["TFT_Downside_99"], color="#c0392b", lw=1.8, label="ECTFT Long VaR")
+        ax.plot(df.index, df["GARCH_VaR_99"], color="#e67e22", ls=":", lw=1.3, label="GJR-GARCH VaR")
+        ax.plot(df.index, df["TFT_Upside_99"], color="#2980b9", lw=1.8, label="ECTFT Short VaR")
+        ax.fill_between(df.index, df["TFT_Downside_99"], df["TFT_Upside_99"], color="#34495e", alpha=0.08)
 
-        ax.plot(df["Date"], df["Actual"], color="#95a5a6", alpha=0.55, linewidth=0.85, label="Log Return")
-        ax.plot(df["Date"], df["GARCH_VaR_99"], color="#e67e22", linestyle="--", linewidth=1.3, label="GJR-GARCH 99% VaR")
-        ax.plot(df["Date"], df["TFT_Downside_99"], color="#2980b9", linewidth=1.8, label="ECTFT 99% VaR")
+        dh = df[df["Actual"] < df["TFT_Downside_99"]]
+        uh = df[df["Actual"] > df["TFT_Upside_99"]]
+        ax.scatter(dh.index, dh["Actual"], color="#c0392b", marker="v", zorder=5, label=f"Long Breaches (n={len(dh)})")
+        ax.scatter(uh.index, uh["Actual"], color="#2980b9", marker="^", zorder=5, label=f"Short Breaches (n={len(uh)})")
 
-        breaches = df[df["Actual"] < df["TFT_Downside_99"]]
-        ax.scatter(breaches["Date"], breaches["Actual"], color="#c0392b", marker="x", s=45, zorder=6, label=f"Breaches (n={len(breaches)})")
-
-        ax.set_title(f"{sym} 99% Downside VaR Backtest", fontweight="bold", fontsize=11)
+        ax.set_title(f"Two-Sided 99% Risk River: {sym}", fontweight="bold")
         ax.set_ylabel("Return / VaR (%)")
-        if i == 0:
-            ax.legend(loc="upper right", ncol=4, frameon=True, facecolor="white", fontsize=8)
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True, fontsize=8.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, f"fig4_risk_river_{sym}.png"))
+        plt.close()
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "report_fig5_var_tracking_all.png"), dpi=300)
-    plt.close()
+def plot_var_tracking(panel_df):
+    for sym in TICKERS:
+        df = panel_df[panel_df["ticker"] == sym].sort_values("Date")
+        fig, ax = plt.subplots(figsize=(10, 4), dpi=300)
 
+        ax.plot(df["Date"], df["Actual"], color="#95a5a6", alpha=0.55, lw=0.85, label="Log Return")
+        ax.plot(df["Date"], df["GARCH_VaR_99"], color="#e67e22", ls="--", lw=1.3, label="GJR-GARCH VaR")
+        ax.plot(df["Date"], df["TFT_Downside_99"], color="#2980b9", lw=1.8, label="ECTFT VaR")
 
-# =====================================================================
-# 6. CUMULATIVE LOSS COMPARISON & DM TEST (3-SERIES PANEL)
-# =====================================================================
-def plot_all_loss_comparisons(panel_df):
-    print("[PLOT 6/6] Generating Cumulative Loss & Diebold-Mariano Audits...")
-    fig, axes = plt.subplots(1, 3, figsize=(17, 5), dpi=300, sharey=False)
+        br = df[df["Actual"] < df["TFT_Downside_99"]]
+        ax.scatter(br["Date"], br["Actual"], color="#c0392b", marker="x", s=50, zorder=6, label=f"Breaches (n={len(br)})")
 
-    for i, sym in enumerate(TICKERS):
-        ax = axes[i]
-        df = panel_df[panel_df["ticker"] == sym].sort_values(by="Date").set_index("Date")
+        ax.set_title(f"{sym} 99% Downside VaR Tracking", fontweight="bold")
+        ax.set_ylabel("Return / VaR (%)")
+        ax.legend(loc="upper right", ncol=4, frameon=True, fontsize=8.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, f"fig5_var_tracking_{sym}.png"))
+        plt.close()
 
-        loss_garch = compute_pinball_loss(df["Actual"].values, df["GARCH_VaR_99"].values, q=0.01)
-        loss_tft = compute_pinball_loss(df["Actual"].values, df["TFT_Downside_99"].values, q=0.01)
+def plot_loss_comparisons(panel_df):
+    for sym in TICKERS:
+        df = panel_df[panel_df["ticker"] == sym].sort_values("Date").set_index("Date")
+        fig, ax = plt.subplots(figsize=(6, 4.5), dpi=300)
+
+        loss_garch = compute_pinball_loss(df["Actual"].values, df["GARCH_VaR_99"].values, Q)
+        loss_tft = compute_pinball_loss(df["Actual"].values, df["TFT_Downside_99"].values, Q)
 
         m = calculate_metrics(df)
-        cum_garch = np.cumsum(loss_garch)
-        cum_tft = np.cumsum(loss_tft)
+        ax.plot(df.index, np.cumsum(loss_garch), label="GJR-GARCH", color="gray", ls="--")
+        ax.plot(df.index, np.cumsum(loss_tft), label="Full ECTFT", color="#27ae60", lw=2.0)
 
-        ax.plot(df.index, cum_garch, label="GJR-GARCH", color="gray", linestyle="--")
-        ax.plot(df.index, cum_tft, label="Econometrically-Conditioned TFT", color="#27ae60", linewidth=2.0)
-
-        # DM convention (Round 23): d_t = L_TFT - L_GARCH, so NEGATIVE dm_stat
-        # means ECTFT has LOWER pinball loss; positive means GJR-GARCH lower.
-        sig_txt = f"DM: {m['dm_stat']:.2f} (p={m['dm_p_value']:.4f})" + "\n(negative = ECTFT lower loss; positive = GARCH lower)"
-        ax.set_title(f"{sym}\n{sig_txt}", fontweight="bold", fontsize=10.5)
+        title_txt = f"{sym} Cumulative Loss\nDM: {m['dm_stat']:.2f} (p={m['dm_p_value']:.4f})"
+        ax.set_title(title_txt, fontweight="bold", fontsize=10.5)
         ax.set_xlabel("Test Horizon")
-        if i == 0:
-            ax.set_ylabel("Cumulative Pinball Loss ($q=0.01$)")
-            ax.legend(frameon=True, facecolor="white", fontsize=8.5)
+        ax.set_ylabel("Cumulative Pinball Loss ($q=0.01$)")
+        ax.legend(frameon=True, facecolor="white", fontsize=8.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, f"fig6_loss_audit_{sym}.png"))
+        plt.close()
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "report_fig6_loss_audit_all.png"), dpi=300)
-    plt.close()
-
-
-# =====================================================================
-# 7. AGGREGATED AUDIT TABLE & REPORT EXPORT (across all seeds)
-# =====================================================================
 def export_complete_test_suite(panel_df, garch_params, granger_params):
-    print("\n[EXPORT] Compiling aggregated test suite tables and audit summaries...")
-
     panel_eval = evaluate_panel_metrics(panel_df)
     rows = []
-
     for sym in TICKERS:
         m = panel_eval["per_ticker"][sym]
-        exp_breaches = m["total_obs"] * 0.01
-        breach_pct = (m["breaches"] / m["total_obs"]) * 100
-
         rows.append({
-            "Asset": sym,
-            "Observations": m["total_obs"],
-            "Breaches (5-seed ensemble)": m["breaches"],
-            "Expected Breaches": exp_breaches,
-            "Breach Rate (%)": f"{breach_pct:.2f}%",
-            "Binomial Coverage Zone": m["coverage_zone"],
-            "Kupiec POF Stat": round(m["kupiec_stat"], 3),
-            "Kupiec p-value": round(m["kupiec_p_value"], 4),
-            "Christoffersen Stat": round(m["christ_stat"], 3),
-            "Christoffersen p-val": round(m["christ_p_value"], 4),
-            "Engle-Manganelli DQ Stat": round(m["dq_stat"], 3) if not np.isnan(m["dq_stat"]) else "N/A",
-            "DQ p-value": round(m["dq_p_value"], 4) if not np.isnan(m["dq_p_value"]) else "N/A",
-            # DM convention (Round 23): d_t = L_TFT - L_GARCH
-            "DM Stat (neg=TFT lower / pos=GARCH lower)": round(m["dm_stat"], 4),
-            "DM p-value": round(m["dm_p_value"], 4),
-            "Mean Loss Diff": round(m["mean_loss_diff"], 6),
-            "Tail n (breaches)": m["tail_exceedance_count"],
-            "Tail mean exceedance loss": round(m["tail_mean_return"], 4) if not np.isnan(m["tail_mean_return"]) else "N/A",
-            "Tail mean std resid (z)": round(m["tail_mean_standardized_resid"], 4) if not np.isnan(m["tail_mean_standardized_resid"]) else "N/A",
+            "Asset": sym, "Observations": m["total_obs"], "Breaches (5-seed)": m["breaches"],
+            "Kupiec p": round(m["kupiec_p_value"], 4), "DQ p": round(m["dq_p_value"], 4) if not np.isnan(m["dq_p_value"]) else "N/A",
+            "DM Stat": round(m["dm_stat"], 4), "DM p-value": round(m["dm_p_value"], 4),
+            "Mean Loss Diff": round(m["mean_loss_diff"], 6)
         })
-
     audit_table = pd.DataFrame(rows)
-
-    csv_path = os.path.join(OUTPUT_DIR, "regulatory_test_suite_results.csv")
-    audit_table.to_csv(csv_path, index=False)
-    print(f"[SUCCESS] Test suite table saved as CSV to: {csv_path}")
+    audit_table.to_csv(os.path.join(OUTPUT_DIR, "regulatory_test_suite_results.csv"), index=False)
 
     report_path = os.path.join(OUTPUT_DIR, "model_validation_master_report.txt")
-
     with open(report_path, "w") as f:
-        f.write("=" * 80 + "\n")
-        f.write("      REGULATORY-INSPIRED 99% VAR BACKTESTING REPORT\n")
-        f.write("      (Econometrically-Conditioned TFT)\n")
-        f.write("=" * 80 + "\n\n")
-        f.write("NOTE: This table reports the pre-determined 5-seed ENSEMBLE forecast\n")
-        f.write("(mean-of-seed q=0.01 forecast across seeds), not a cherry-picked seed.\n")
-        f.write("Terminology (S7): 'Regulatory-Inspired Binomial Zone' is a custom,\n")
-        f.write("sample-size-adapted binomial classification -- NOT the formal Basel\n")
-        f.write("traffic-light table, and NOT a Basel III/FRTB compliance certification.\n")
-        f.write(f"Frozen research cut-off: {config.RESEARCH_END_DATE}. No time_idx feature.\n")
-        f.write("STATISTICAL-POWER CAVEAT (S9): at 500 OOS days and alpha=1% only ~5\n")
-        f.write("exceptions are expected, so Kupiec / Christoffersen / DQ tests have LOW\n")
-        f.write("POWER. Non-rejection means 'no evidence of failure' -- it is NOT proof\n")
-        f.write("of calibration accuracy.\n")
-        f.write("CORE FINDING (S10): the Full ECTFT underperformed the GARCH-conditioned\n")
-        f.write("TFT in out-of-sample 1% VaR accuracy on this sample: the GJR-GARCH prior\n")
-        f.write("is highly effective for neural tail-risk forecasting, while the\n")
-        f.write("cross-border macro features introduce noise that degrades 1% VaR.\n\n")
+        f.write("=== REGULATORY-INSPIRED 99% VAR BACKTESTING REPORT ===\n\n")
         f.write(audit_table.to_string(index=False))
-        f.write("\n\nTAIL NOTE: 'Tail mean std resid (z)' is a descriptive breach-depth\n")
-        f.write("diagnostic ('Tail Exceedance Depth', S7) -- mean standardized\n")
-        f.write("exceedance. A strongly negative value signals the model understates\n")
-        f.write("crash severity on breach days. NOT an Expected Shortfall backtest.\n")
-        f.write("\n\n" + "-" * 80 + "\n")
-        f.write("GJR-GARCH(1,1) SKEW-T ESTIMATED PARAMETERS (robust shape extraction):\n")
+        f.write("\n\n=== GJR-GARCH(1,1) SKEW-T PARAMETERS ===\n")
         for sym, p in garch_params.items():
-            nu_str = f"{p['nu']:.2f}" if not np.isnan(p["nu"]) else "N/A"
-            lam_str = f"{p['lambda']:.3f}" if not np.isnan(p["lambda"]) else "N/A"
-            f.write(f"  [{sym}] Omega={p['omega']:.5f}, Alpha={p['alpha']:.5f}, Gamma={p['gamma']:.5f}, "
-                    f"Beta={p['beta']:.5f}, df(nu)={nu_str}, lambda={lam_str}\n")
-        f.write("\nCROSS-BORDER PREDICTIVE PRECEDENCE (S7; shared trading dates,\n")
-        f.write("native calendar, no ML timezone shift, no forward-fill):\n")
-        for sym, g in granger_params.items():
-            dom_label = g.get("domestic_label", "")
-            f.write(f"  [{sym}] US VIX -> {dom_label}:\n")
-            f.write(f"     1D Lag p={g['p_forward'][0]:.4f} | 2D Lag p={g['p_forward'][1]:.4f} | "
-                    f"5D Lag p={g['p_forward'][3]:.4f}\n")
-        f.write("\nGRANGER INPUT DIAGNOSTICS (ADF stationarity + calendar-artifact check):\n")
-        for sym, g in granger_params.items():
-            diag = g.get("diag", {})
-            us_d = diag.get("US VIX diff", {})
-            dom_d = diag.get("Domestic diff", {})
-            f.write(f"  [{sym}] US VIX NativeDiff: ADF p={_fmt_p(us_d.get('adf_p', np.nan))}, "
-                    f"zero%={_fmt_pct(us_d.get('zero_frac', np.nan))}, "
-                    f"dup%={_fmt_pct(us_d.get('dup_frac', np.nan))} | "
-                    f"Domestic Native: ADF p={_fmt_p(dom_d.get('adf_p', np.nan))}, "
-                    f"zero%={_fmt_pct(dom_d.get('zero_frac', np.nan))}, "
-                    f"dup%={_fmt_pct(dom_d.get('dup_frac', np.nan))}\n")
-        f.write("  [READ] Near-zero Granger p is only credible if ADF p<0.05 (stationary)\n")
-        f.write("  and zero%/dup% are small (no calendar-misalignment artifact).\n")
-        f.write("-" * 80 + "\n\n")
-
-        # Across-seed aggregation (if the multi-seed report exists)
-        msr = "multi_seed_validation_report.txt"
-        if os.path.exists(msr):
-            with open(msr) as mf:
-                f.write(mf.read())
-        else:
-            f.write("MULTI-SEED VALIDATION REPORT NOT FOUND -- run main.py to aggregate seeds.\n")
-        f.write("=" * 80 + "\n")
-
-    print(f"[SUCCESS] Comprehensive report written to: {report_path}")
+            f.write(f"[{sym}] Omega={p['omega']:.5f}, Alpha={p['alpha']:.5f}, Gamma={p['gamma']:.5f}, Beta={p['beta']:.5f}\n")
     return audit_table
 
-
 if __name__ == "__main__":
-    panel_data, master_data = load_datasets()
-    plot_distribution_fits(master_data)
-    garch_dict = plot_all_news_impact_curves(master_data)
-    granger_dict = plot_all_granger_spillover(master_data)
-    plot_all_risk_rivers(panel_data)
-    plot_all_backtest_tracking(panel_data)
-    plot_all_loss_comparisons(panel_data)
-    # RD6: learning-curve + LR-trajectory figures from the CSVLogger outputs.
-    try:
-        from learning_curves import plot_learning_curves, plot_lr_trajectory
-        plot_learning_curves()
-        plot_lr_trajectory()
-    except Exception as e:
-        print(f"[WARN] Learning-curve figures skipped: {e}")
-    export_complete_test_suite(panel_data, garch_dict, granger_dict)
-    print(f"\n[COMPLETE] All 3-series publication figures and audit tables saved to: {OUTPUT_DIR}")
+    panel, master = load_datasets()
+    plot_distribution_fits(master)
+    garch_dict = plot_news_impact_curves(master)
+    granger_dict = plot_granger_spillover(master)
+    plot_risk_rivers(panel)
+    plot_var_tracking(panel)
+    plot_loss_comparisons(panel)
+    export_complete_test_suite(panel, garch_dict, granger_dict)
